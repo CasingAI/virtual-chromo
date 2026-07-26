@@ -42,12 +42,16 @@
     sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
   ></iframe>
 
-  <script src="/__sys__/assets/bridge.js"></script>
+  <script src="bridge.js"></script>
   <script>
     (function () {
       'use strict'
 
+      const UPDATE_INTERVAL_MS = 15000
       const boot = document.getElementById('boot')
+      let reloadingForUpdate = false
+      /** @type {string} */
+      let knownBridgeTag = ''
 
       function hideBoot() {
         boot.classList.add('hidden')
@@ -56,6 +60,19 @@
       function showBoot(message) {
         boot.textContent = message
         boot.classList.remove('hidden')
+      }
+
+      function allowUnloadAndReload() {
+        if (reloadingForUpdate) {
+          return
+        }
+        reloadingForUpdate = true
+        try {
+          sessionStorage.setItem('_vc_allow_unload', '1')
+        } catch (err) {
+          // ignore
+        }
+        location.reload()
       }
 
       function reloadAfterSwInstall() {
@@ -70,7 +87,7 @@
         } catch (err) {
           // ignore
         }
-        location.reload()
+        allowUnloadAndReload()
       }
 
       function onSwActive() {
@@ -85,6 +102,78 @@
           } else {
             reloadAfterSwInstall()
           }
+        })
+      }
+
+      /**
+       * @param {ServiceWorkerRegistration} reg
+       */
+      function watchForUpdates(reg) {
+        function checkSw() {
+          reg.update().catch(function () {})
+        }
+
+        function checkBridgeAsset() {
+          fetch('/bridge.js', { cache: 'no-store' })
+            .then(function (res) {
+              if (!res.ok) {
+                return
+              }
+              var tag =
+                res.headers.get('etag') ||
+                res.headers.get('cf-ray') ||
+                res.headers.get('content-length') ||
+                ''
+              return res.text().then(function (body) {
+                var fingerprint = tag + ':' + body.length + ':' + body.slice(0, 64)
+                if (!knownBridgeTag) {
+                  knownBridgeTag = fingerprint
+                  return
+                }
+                if (fingerprint !== knownBridgeTag) {
+                  knownBridgeTag = fingerprint
+                  allowUnloadAndReload()
+                }
+              })
+            })
+            .catch(function () {})
+        }
+
+        function checkAll() {
+          checkSw()
+          checkBridgeAsset()
+        }
+
+        checkAll()
+        setInterval(checkAll, UPDATE_INTERVAL_MS)
+
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') {
+            checkAll()
+          }
+        })
+
+        window.addEventListener('focus', checkAll)
+
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+        }
+        reg.addEventListener('updatefound', function () {
+          var worker = reg.installing
+          if (!worker) {
+            return
+          }
+          worker.addEventListener('statechange', function () {
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+              // New SW installed; skipWaiting is already called in bundle install handler.
+              // controllerchange will reload. If waiting sticks, nudge reload shortly.
+              setTimeout(function () {
+                if (reg.waiting) {
+                  allowUnloadAndReload()
+                }
+              }, 1500)
+            }
+          })
         })
       }
 
@@ -116,8 +205,12 @@
           return
         }
 
-        sw.register('/sw.js')
-          .then(onSwReady)
+        // Always register (even if a controller already exists) so we can call update().
+        sw.register('/sw.js?b=20260726-debug-panel-fix')
+          .then(function (reg) {
+            watchForUpdates(reg)
+            return onSwReady()
+          })
           .catch(function (err) {
             const message = err && err.message ? err.message : String(err)
             VirtualChromoBridge.emitError(message, 'SW_REGISTER_FAILED')
@@ -126,18 +219,13 @@
       }
 
       VirtualChromoBridge.init()
-
-      if (navigator.serviceWorker.controller) {
-        onSwActive()
-      } else {
-        registerServiceWorker()
-      }
+      registerServiceWorker()
 
       navigator.serviceWorker.addEventListener('controllerchange', function () {
         if (!navigator.serviceWorker.controller) {
           return
         }
-        location.reload()
+        allowUnloadAndReload()
       })
     })()
   </script>

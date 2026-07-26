@@ -1,6 +1,7 @@
 name = "virtual-chromo"
 main = "src/worker/index.js"
 compatibility_date = "2024-09-23"
+account_id = "23ec159df1a5831b2b2d48ec1a7073d4"
 
 [assets]
 directory = "./public"

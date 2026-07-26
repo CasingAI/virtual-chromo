@@ -13,4 +13,5 @@ jsproxy_config({
   node_default: 'local',
   assets_cdn: '/',
   index_path: 'viewer.html',
+  inject_html: '<script src="/inject.js"><\/script>',
 })

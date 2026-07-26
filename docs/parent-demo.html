@@ -22,6 +22,7 @@
       background: #16213e;
       border-bottom: 1px solid #0f3460;
       align-items: center;
+      flex-wrap: wrap;
     }
     .toolbar button {
       padding: 6px 12px;
@@ -35,6 +36,7 @@
     .toolbar button:disabled { opacity: 0.4; cursor: default; }
     #urlInput {
       flex: 1;
+      min-width: 200px;
       padding: 6px 10px;
       border: 1px solid #0f3460;
       border-radius: 4px;
@@ -48,9 +50,14 @@
       background: #0d1b2a;
       border-bottom: 1px solid #0f3460;
     }
-    #frameWrap {
+    #main {
       flex: 1;
       min-height: 0;
+      display: flex;
+    }
+    #frameWrap {
+      flex: 1;
+      min-width: 0;
     }
     #chromo {
       width: 100%;
@@ -58,6 +65,43 @@
       border: 0;
       background: #fff;
     }
+    #consolePanel {
+      width: 320px;
+      border-left: 1px solid #0f3460;
+      background: #0d1b2a;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    #consolePanel h2 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #94a3b8;
+      border-bottom: 1px solid #0f3460;
+    }
+    #consoleList {
+      flex: 1;
+      overflow: auto;
+      padding: 6px;
+      font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .console-entry {
+      margin-bottom: 6px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: #16213e;
+      word-break: break-word;
+    }
+    .console-entry .meta {
+      color: #64748b;
+      margin-bottom: 2px;
+    }
+    .console-entry.level-warn { border-left: 3px solid #f59e0b; }
+    .console-entry.level-error { border-left: 3px solid #ef4444; }
+    .console-entry.level-info { border-left: 3px solid #38bdf8; }
+    .console-entry.level-debug { border-left: 3px solid #64748b; }
   </style>
 </head>
 <body>
@@ -68,14 +112,22 @@
     <input id="urlInput" type="text" placeholder="输入 URL 后按 Enter" spellcheck="false">
     <button id="btnGo" type="button">前往</button>
     <button id="btnEval" type="button" title="在子页面执行 document.title">Eval</button>
+    <button id="btnLog" type="button" title="在子页面 console.log">Log</button>
+    <button id="btnAlert" type="button" title="在子页面 alert（应被 noop）">Alert</button>
   </div>
   <div id="status">等待 virtual-chromo 就绪…</div>
-  <div id="frameWrap">
-    <iframe
-      id="chromo"
-      src="http://localhost:8787/viewer.html"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-    ></iframe>
+  <div id="main">
+    <div id="frameWrap">
+      <iframe
+        id="chromo"
+        src="http://localhost:8787/"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+      ></iframe>
+    </div>
+    <aside id="consolePanel">
+      <h2>Console（VC_CONSOLE_UPDATED + READ）</h2>
+      <div id="consoleList"></div>
+    </aside>
   </div>
 
   <script>
@@ -85,16 +137,19 @@
       const iframe = document.getElementById('chromo')
       const urlInput = document.getElementById('urlInput')
       const statusEl = document.getElementById('status')
+      const consoleList = document.getElementById('consoleList')
       const btnBack = document.getElementById('btnBack')
       const btnForward = document.getElementById('btnForward')
       const btnReload = document.getElementById('btnReload')
       const btnGo = document.getElementById('btnGo')
       const btnEval = document.getElementById('btnEval')
+      const btnLog = document.getElementById('btnLog')
+      const btnAlert = document.getElementById('btnAlert')
 
       let ready = false
       let currentUrl = ''
-      /** @type {Map<string, { resolve: Function, reject: Function }>} */
-      const evalWaiters = new Map()
+      let lastConsoleId = ''
+      const DEFAULT_RPC_TIMEOUT = 30000
 
       function post(cmd, payload) {
         if (!iframe.contentWindow) return
@@ -102,12 +157,98 @@
         iframe.contentWindow.postMessage(msg, '*')
       }
 
-      function vcEval(code) {
+      function vcRpc(resultCmd, cmd, payload, options) {
+        const timeout = (options && options.timeout) || DEFAULT_RPC_TIMEOUT
         return new Promise(function (resolve, reject) {
           const id = crypto.randomUUID()
-          evalWaiters.set(id, { resolve: resolve, reject: reject })
-          post('VC_EVAL', { id: id, code: code })
+          let settled = false
+          let timer
+
+          function finish(fn, arg) {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            window.removeEventListener('message', onResult)
+            fn(arg)
+          }
+
+          timer = setTimeout(function () {
+            finish(reject, Object.assign(new Error(cmd + ' timed out'), {
+              code: 'RPC_TIMEOUT',
+              id: id,
+              timeout: timeout,
+            }))
+          }, timeout)
+
+          function onResult(event) {
+            if (event.source !== iframe.contentWindow) return
+            if (!Array.isArray(event.data)) return
+            const resCmd = event.data[0]
+            const resPayload = event.data[1]
+            if (resCmd !== resultCmd || !resPayload || resPayload.id !== id) return
+            if (resPayload.ok) {
+              finish(resolve, resPayload.value)
+            } else {
+              const err = new Error(
+                resPayload.error && resPayload.error.message || cmd + ' failed',
+              )
+              Object.assign(err, resPayload.error || {})
+              finish(reject, err)
+            }
+          }
+
+          window.addEventListener('message', onResult)
+          post(cmd, Object.assign({ id: id }, payload || {}))
         })
+      }
+
+      function vcEval(code, options) {
+        return vcRpc('VC_EVAL_RESULT', 'VC_EVAL', { code: code }, options)
+      }
+
+      function vcConsoleRead(after) {
+        const payload = {}
+        if (after) {
+          payload.after = after
+        }
+        return vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', payload)
+      }
+
+      function appendConsoleEntries(entries) {
+        if (!entries || !entries.length) return
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i]
+          const el = document.createElement('div')
+          el.className = 'console-entry level-' + (entry.level || 'log')
+          const meta = document.createElement('div')
+          meta.className = 'meta'
+          meta.textContent = entry.level + ' · ' + new Date(entry.ts).toLocaleTimeString()
+          const body = document.createElement('div')
+          body.textContent = (entry.args || []).join(' ')
+          el.appendChild(meta)
+          el.appendChild(body)
+          consoleList.appendChild(el)
+          if (entry.id) {
+            lastConsoleId = entry.id
+          }
+        }
+        consoleList.scrollTop = consoleList.scrollHeight
+      }
+
+      function pullConsoleDelta() {
+        if (!ready) return Promise.resolve()
+        return vcConsoleRead(lastConsoleId)
+          .then(function (value) {
+            if (value && value.entries && value.entries.length) {
+              appendConsoleEntries(value.entries)
+            }
+            if (value && value.latestId) {
+              lastConsoleId = value.latestId
+            }
+          })
+          .catch(function (err) {
+            console.error('[virtual-chromo console read]', err)
+          })
       }
 
       function setStatus(text) {
@@ -119,14 +260,15 @@
           setStatus('virtual-chromo 尚未就绪')
           return
         }
-        post('VC_NAVIGATE', { url })
+        post('VC_NAVIGATE', { url: url })
       }
 
       window.addEventListener('message', function (event) {
         if (event.source !== iframe.contentWindow) return
         if (!Array.isArray(event.data)) return
 
-        const [cmd, payload] = event.data
+        const cmd = event.data[0]
+        const payload = event.data[1]
 
         switch (cmd) {
           case 'VC_READY':
@@ -135,7 +277,7 @@
             navigate('https://example.com')
             break
           case 'VC_NAVIGATING':
-            setStatus('正在加载 ' + (payload && payload.url || ''))
+            setStatus('即将加载 ' + (payload && payload.url || ''))
             break
           case 'VC_NAVIGATED':
             currentUrl = payload && payload.url || ''
@@ -146,8 +288,15 @@
             break
           case 'VC_LOADING':
             if (payload && payload.loading) {
-              setStatus('加载中…')
+              setStatus('加载中… ' + (payload.url || ''))
             }
+            break
+          case 'VC_LOAD_FAILED':
+            setStatus(
+              '加载失败: ' +
+              (payload && payload.message || payload && payload.code || 'unknown'),
+            )
+            console.error('[virtual-chromo load failed]', payload)
             break
           case 'VC_ERROR':
             setStatus('错误: ' + (payload && payload.message || 'unknown'))
@@ -156,19 +305,9 @@
           case 'VC_PONG':
             setStatus('pong')
             break
-          case 'VC_EVAL_RESULT': {
-            const waiter = payload && evalWaiters.get(payload.id)
-            if (!waiter) break
-            evalWaiters.delete(payload.id)
-            if (payload.ok) {
-              waiter.resolve(payload.value)
-            } else {
-              const err = new Error(payload.error && payload.error.message || 'eval failed')
-              Object.assign(err, payload.error || {})
-              waiter.reject(err)
-            }
+          case 'VC_CONSOLE_UPDATED':
+            pullConsoleDelta()
             break
-          }
         }
       })
 
@@ -193,6 +332,32 @@
           .catch(function (err) {
             setStatus('eval 失败: ' + err.message)
             console.error('[virtual-chromo eval]', err)
+          })
+      })
+      btnLog.addEventListener('click', function () {
+        if (!ready) {
+          setStatus('virtual-chromo 尚未就绪')
+          return
+        }
+        vcEval("console.log('hello from parent-demo', Date.now())")
+          .then(function () {
+            setStatus('已触发 console.log，等待 VC_CONSOLE_UPDATED…')
+          })
+          .catch(function (err) {
+            setStatus('log 失败: ' + err.message)
+          })
+      })
+      btnAlert.addEventListener('click', function () {
+        if (!ready) {
+          setStatus('virtual-chromo 尚未就绪')
+          return
+        }
+        vcEval("alert('should be noop')")
+          .then(function () {
+            setStatus('已触发 alert（应被 noop），查看右侧 console')
+          })
+          .catch(function (err) {
+            setStatus('alert 失败: ' + err.message)
           })
       })
     })()

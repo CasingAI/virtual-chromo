@@ -71,7 +71,10 @@ async function fetchHandler(request, env) {
   }
 
   if (urlObj.pathname.startsWith('/http/')) {
-    return httpHandler(request, urlObj.pathname.slice('/http/'.length))
+    return httpHandler(
+      request,
+      urlObj.pathname.slice('/http/'.length) + urlObj.search,
+    )
   }
 
   switch (urlObj.pathname) {
@@ -82,10 +85,37 @@ async function fetchHandler(request, env) {
     case '/works':
       return makeRes('it works')
     case '/':
-      return Response.redirect(new URL('/viewer.html', urlObj.origin).href, 302)
+    case '/index.html':
+    case '/viewer.html':
+    case '/viewer':
+      return withNoStore(
+        await env.ASSETS.fetch(
+          new Request(new URL('/viewer', urlObj.origin), request),
+        ),
+      )
+    case '/bridge.js':
+    case '/inject.js':
+    case '/sw.js':
+    case '/bundle.js':
+    case '/conf.js':
+      return withNoStore(await env.ASSETS.fetch(request))
     default:
       return env.ASSETS.fetch(request)
   }
+}
+
+/**
+ * @param {Response} res
+ */
+function withNoStore(res) {
+  const headers = new Headers(res.headers)
+  headers.set('cache-control', 'no-store, no-cache, must-revalidate')
+  headers.set('pragma', 'no-cache')
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  })
 }
 
 /**
@@ -151,6 +181,13 @@ function httpHandler(req, pathname) {
     reqHdrNew.delete('referer')
   }
 
+  // Avoid 304 responses with empty bodies breaking iframe document loads.
+  reqHdrNew.delete('if-none-match')
+  reqHdrNew.delete('if-modified-since')
+  reqHdrNew.delete('if-unmodified-since')
+  reqHdrNew.delete('if-match')
+  reqHdrNew.delete('if-range')
+
   const urlStr = pathname.replace(/^(https?):\/+/, '$1://')
   const targetUrl = newUrl(urlStr)
   if (!targetUrl) {
@@ -180,6 +217,23 @@ function httpHandler(req, pathname) {
  */
 async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
   const res = await fetch(urlObj.href, reqInit)
+
+  if (res.status === 304 && retryTimes < MAX_RETRY) {
+    const retryHeaders = new Headers(reqInit.headers)
+    retryHeaders.delete('if-none-match')
+    retryHeaders.delete('if-modified-since')
+    retryHeaders.delete('if-unmodified-since')
+    retryHeaders.delete('if-match')
+    retryHeaders.delete('if-range')
+    return proxy(
+      urlObj,
+      { ...reqInit, headers: retryHeaders },
+      acehOld,
+      rawLen,
+      retryTimes + 1,
+    )
+  }
+
   const resHdrOld = res.headers
   const resHdrNew = new Headers(resHdrOld)
 
@@ -248,6 +302,12 @@ async function proxy(urlObj, reqInit, acehOld, rawLen, retryTimes) {
   resHdrNew.delete('content-security-policy')
   resHdrNew.delete('content-security-policy-report-only')
   resHdrNew.delete('clear-site-data')
+  resHdrNew.delete('x-frame-options')
+  resHdrNew.delete('permissions-policy')
+  resHdrNew.delete('cross-origin-opener-policy')
+  resHdrNew.delete('cross-origin-embedder-policy')
+  resHdrNew.delete('cross-origin-resource-policy')
+  resHdrNew.delete('etag')
 
   if (
     status === 301 ||
