@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260727-v3'
+  var VC_BUILD = '20260727-v4'
 
   if (window.__vcInjected) {
     return
@@ -46,26 +46,42 @@
     return Array.prototype.map.call(args, stringifyArg)
   }
 
+  function makeEntryId() {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID()
+      }
+    } catch {
+      // ignore
+    }
+    return String(Date.now()) + '-' + Math.random().toString(16).slice(2)
+  }
+
   /**
    * @param {string} level
    * @param {unknown[]} args
    */
   function forwardConsole(level, args) {
+    var entry = {
+      id: makeEntryId(),
+      level: level,
+      args: formatArgs(args),
+      ts: Date.now(),
+      url: location.href,
+    }
+
     try {
-      window.parent.postMessage(
-        [
-          CHANNEL,
-          'CONSOLE',
-          {
-            id: crypto.randomUUID(),
-            level: level,
-            args: formatArgs(args),
-            ts: Date.now(),
-            url: location.href,
-          },
-        ],
-        '*',
-      )
+      var bridge = window.parent
+      if (bridge && typeof bridge.__vcOnInjectConsole === 'function') {
+        bridge.__vcOnInjectConsole(entry)
+        return
+      }
+    } catch {
+      // ignore cross-origin direct calls
+    }
+
+    try {
+      window.parent.postMessage([CHANNEL, 'CONSOLE', entry], '*')
     } catch {
       // ignore cross-origin postMessage failures
     }
@@ -73,15 +89,16 @@
 
   var levels = ['log', 'info', 'warn', 'error', 'debug']
   for (var i = 0; i < levels.length; i++) {
-    var level = levels[i]
-    var original = console[level]
-    if (typeof original !== 'function') {
-      continue
-    }
-    console[level] = function () {
-      forwardConsole(level, Array.prototype.slice.call(arguments))
-      return original.apply(console, arguments)
-    }
+    ;(function (level) {
+      var original = console[level]
+      if (typeof original !== 'function') {
+        return
+      }
+      console[level] = function () {
+        forwardConsole(level, Array.prototype.slice.call(arguments))
+        return original.apply(console, arguments)
+      }
+    })(levels[i])
   }
 
   window.addEventListener('error', function (event) {

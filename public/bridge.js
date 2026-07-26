@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v3'
+  const BUILD = '20260727-v4'
   const PROXY_PREFIX = '/-----'
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
@@ -647,6 +647,8 @@
       return
     }
 
+    window.__vcOnInjectConsole = ingestInjectConsoleEntry
+
     window.addEventListener('message', onParentMessage)
     window.addEventListener('message', onInjectMessage)
     contentFrame.addEventListener('load', onContentLoad)
@@ -909,22 +911,38 @@
   }
 
   /**
-   * @param {MessageEvent} event
+   * @param {Window|null} source
    */
-  function onInjectMessage(event) {
-    if (!contentFrame || event.source !== contentFrame.contentWindow) {
-      return
+  function isFromContentFrame(source) {
+    if (!contentFrame || !source) {
+      return false
     }
-    if (!Array.isArray(event.data) || event.data[0] !== '_VC_INJECT') {
-      return
+    try {
+      const win = contentFrame.contentWindow
+      if (!win) {
+        return false
+      }
+      if (source === win) {
+        return true
+      }
+      for (let i = 0; i < win.frames.length; i++) {
+        if (win.frames[i] === source) {
+          return true
+        }
+      }
+    } catch {
+      return false
     }
+    return false
+  }
 
-    const kind = event.data[1]
-    const payload = event.data[2]
-    if (kind !== 'CONSOLE' || !payload || typeof payload !== 'object') {
+  /**
+   * @param {unknown} payload
+   */
+  function ingestInjectConsoleEntry(payload) {
+    if (!payload || typeof payload !== 'object') {
       return
     }
-
     const entry = /** @type {{ id?: string, level?: string, args?: unknown, ts?: number, url?: string }} */ (
       payload
     )
@@ -939,6 +957,58 @@
       ts: typeof entry.ts === 'number' ? entry.ts : Date.now(),
       url: typeof entry.url === 'string' ? entry.url : '',
     })
+  }
+
+  /**
+   * @param {MessageEvent} event
+   */
+  function onInjectMessage(event) {
+    if (!isFromContentFrame(event.source)) {
+      return
+    }
+    if (!Array.isArray(event.data) || event.data[0] !== '_VC_INJECT') {
+      return
+    }
+
+    const kind = event.data[1]
+    const payload = event.data[2]
+    if (kind !== 'CONSOLE') {
+      return
+    }
+
+    ingestInjectConsoleEntry(payload)
+  }
+
+  function ensureConsoleHook() {
+    if (!contentFrame) {
+      return
+    }
+    /** @type {Window|null} */
+    let win = null
+    try {
+      win = contentFrame.contentWindow
+      if (!win || win.__vcInjected) {
+        return
+      }
+    } catch {
+      return
+    }
+
+    vlog('warn', ['inject.js not detected after load; reloading inject.js'])
+    try {
+      const doc = win.document
+      if (!doc) {
+        return
+      }
+      const script = doc.createElement('script')
+      script.src = location.origin + '/inject.js?b=' + BUILD
+      ;(doc.head || doc.documentElement).appendChild(script)
+    } catch (err) {
+      vlog('error', [
+        'inject.js reload failed:',
+        err instanceof Error ? err.message : String(err),
+      ])
+    }
   }
 
   /**
@@ -1091,6 +1161,7 @@
       recordHistory('loaded', state.url, state.title)
       postToParent('VC_NAVIGATED', state)
     }
+    ensureConsoleHook()
   }
 
   /**

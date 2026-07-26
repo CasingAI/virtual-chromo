@@ -318,9 +318,9 @@ Service Worker 注册完成，可接收导航命令。
 
 注入方式：[`public/conf.js`](../public/conf.js) 的 `inject_html` 使用 **Worker 绝对 URL**（prepended HTML 含 `<base href="目标站">`，相对路径会解析错）。版本：`VC_VERSION` / `VC_BUILD`；inject 启动日志 `[virtual-chromo] inject.js v...`；内层 iframe 可查 `window.__vcInjected`。
 
-### 内部通道：`_VC_INJECT`（不对外）
+### 内部通道：`_VC_INJECT` / `__vcOnInjectConsole`（不对外）
 
-`inject.js` → `bridge.js` 使用 `['_VC_INJECT', 'CONSOLE', entry]`。**父项目不应监听或发送此消息**；对外仅 `VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`。
+`inject.js` → `bridge.js`：优先调用 viewer 上的 `window.__vcOnInjectConsole(entry)`（绕过 jsproxy 对 `postMessage` 的 hook）；回退 `['_VC_INJECT', 'CONSOLE', entry]`。**父项目不应监听或发送**；对外仅 `VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`。
 
 ### 子页面内：原生 dialog 处理
 

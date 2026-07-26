@@ -40,6 +40,28 @@ viewer 外壳里的 `[jsproxy] shell page inited` **不代表** inject 已加载
 
 ---
 
+## Console 有输出但无 `VC_CONSOLE_UPDATED`
+
+### 现象
+
+- `VC_EVAL` 成功，DevTools 能看到 `console.log`
+- bridge 调试面板「通讯」里没有 `VC_CONSOLE_UPDATED`
+
+### 根因
+
+jsproxy [`bundle.js`](../public/bundle.js) hook 了 `Window.prototype.postMessage`：调用 `parent.postMessage` 时可能把消息发往错误的 `top.__get_srcWin()` 窗口，导致 `_VC_INJECT` 到不了 bridge。
+
+### 修复（build `20260727-v4`+）
+
+1. [`public/inject.js`](../public/inject.js) 优先调用 `window.parent.__vcOnInjectConsole(entry)`（同源直连，绕过 postMessage hook）
+2. [`public/bridge.js`](../public/bridge.js) 暴露 `window.__vcOnInjectConsole`；页面 load 后若未检测到 inject 会尝试重新加载 `/inject.js`
+
+### 自检
+
+调试面板「通讯」里 eval 后应出现 `-> 上报 VC_CONSOLE_UPDATED`；父项目监听该事件并用 `VC_CONSOLE_READ` 增量拉取。
+
+---
+
 ## `element.click()` 无效，鼠标点击有效
 
 ### 现象

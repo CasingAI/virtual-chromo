@@ -1,6 +1,6 @@
 // virtual-chromo static assets must bypass jsproxy fetch routing.
 // Bump VC_BUILD whenever bridge/bundle/conf change so clients pick up a new SW.
-const VC_BUILD = '20260727-v3'
+const VC_BUILD = '20260727-v4'
 self.addEventListener('fetch', (event) => {
   const path = new URL(event.request.url).pathname
   if (
