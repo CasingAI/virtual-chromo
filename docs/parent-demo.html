@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>virtual-chromo 父项目 Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      align-items: center;
+    }
+    .toolbar button {
+      padding: 6px 12px;
+      border: 0;
+      border-radius: 4px;
+      background: #0f3460;
+      color: #eee;
+      cursor: pointer;
+    }
+    .toolbar button:hover { background: #1a4a7a; }
+    .toolbar button:disabled { opacity: 0.4; cursor: default; }
+    #urlInput {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      background: #0d1b2a;
+      color: #eee;
+    }
+    #status {
+      padding: 4px 8px;
+      font-size: 12px;
+      color: #94a3b8;
+      background: #0d1b2a;
+      border-bottom: 1px solid #0f3460;
+    }
+    #frameWrap {
+      flex: 1;
+      min-height: 0;
+    }
+    #chromo {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="btnBack" type="button" title="后退">←</button>
+    <button id="btnForward" type="button" title="前进">→</button>
+    <button id="btnReload" type="button" title="刷新">↻</button>
+    <input id="urlInput" type="text" placeholder="输入 URL 后按 Enter" spellcheck="false">
+    <button id="btnGo" type="button">前往</button>
+  </div>
+  <div id="status">等待 virtual-chromo 就绪…</div>
+  <div id="frameWrap">
+    <iframe
+      id="chromo"
+      src="http://localhost:8787/viewer.html"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+    ></iframe>
+  </div>
+
+  <script>
+    (function () {
+      'use strict'
+
+      const iframe = document.getElementById('chromo')
+      const urlInput = document.getElementById('urlInput')
+      const statusEl = document.getElementById('status')
+      const btnBack = document.getElementById('btnBack')
+      const btnForward = document.getElementById('btnForward')
+      const btnReload = document.getElementById('btnReload')
+      const btnGo = document.getElementById('btnGo')
+
+      let ready = false
+      let currentUrl = ''
+
+      function post(cmd, payload) {
+        if (!iframe.contentWindow) return
+        const msg = payload === undefined ? [cmd] : [cmd, payload]
+        iframe.contentWindow.postMessage(msg, '*')
+      }
+
+      function setStatus(text) {
+        statusEl.textContent = text
+      }
+
+      function navigate(url) {
+        if (!ready) {
+          setStatus('virtual-chromo 尚未就绪')
+          return
+        }
+        post('VC_NAVIGATE', { url })
+      }
+
+      window.addEventListener('message', function (event) {
+        if (event.source !== iframe.contentWindow) return
+        if (!Array.isArray(event.data)) return
+
+        const [cmd, payload] = event.data
+
+        switch (cmd) {
+          case 'VC_READY':
+            ready = true
+            setStatus('已就绪 v' + (payload && payload.version || '?'))
+            navigate('https://example.com')
+            break
+          case 'VC_NAVIGATING':
+            setStatus('正在加载 ' + (payload && payload.url || ''))
+            break
+          case 'VC_NAVIGATED':
+            currentUrl = payload && payload.url || ''
+            urlInput.value = currentUrl
+            btnBack.disabled = !(payload && payload.canGoBack)
+            btnForward.disabled = !(payload && payload.canGoForward)
+            setStatus((payload && payload.title || currentUrl) || '已加载')
+            break
+          case 'VC_LOADING':
+            if (payload && payload.loading) {
+              setStatus('加载中…')
+            }
+            break
+          case 'VC_ERROR':
+            setStatus('错误: ' + (payload && payload.message || 'unknown'))
+            console.error('[virtual-chromo]', payload)
+            break
+          case 'VC_PONG':
+            setStatus('pong')
+            break
+        }
+      })
+
+      btnBack.addEventListener('click', function () { post('VC_BACK') })
+      btnForward.addEventListener('click', function () { post('VC_FORWARD') })
+      btnReload.addEventListener('click', function () { post('VC_RELOAD') })
+      btnGo.addEventListener('click', function () {
+        navigate(urlInput.value)
+      })
+      urlInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') navigate(urlInput.value)
+      })
+    })()
+  </script>
+</body>
+</html>
