@@ -72,7 +72,7 @@ npm run deploy
 iframe.contentWindow.postMessage(['VC_NAVIGATE', { url: 'https://example.com' }], '*')
 ```
 
-完整协议见 [docs/protocol.md](docs/protocol.md)（含 `VC_EVAL` 在子页面执行 JS），示例见 [docs/parent-demo.html](docs/parent-demo.html)。
+完整协议见 [docs/protocol.md](docs/protocol.md)（含 `VC_EVAL` 在子页面执行 JS），示例见 [docs/parent-demo.html](docs/parent-demo.html)。已知限制见 [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)。
 
 ## 注意事项
 

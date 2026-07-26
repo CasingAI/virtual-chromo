@@ -6,7 +6,8 @@
 ;(function () {
   'use strict'
 
-  const VERSION = '1.2.0'
+  const VERSION = '1.3.0'
+  const BUILD = '20260727-v2'
   const PROXY_PREFIX = '/-----'
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
@@ -31,6 +32,17 @@
 
     /** @type {boolean} */
     let panelOpen = false
+
+    /** @type {string} */
+    let versionLabel = ''
+
+    /**
+     * @param {string} version
+     * @param {string} [build]
+     */
+    function setVersionLabel(version, build) {
+      versionLabel = 'v' + version + (build ? ' · ' + build : '')
+    }
 
     /** @type {string} */
     let activeTab = 'log'
@@ -314,7 +326,8 @@
       const switchBtn = root.querySelector('.vcd-switch')
       if (switchBtn) {
         switchBtn.setAttribute('aria-expanded', panelOpen ? 'true' : 'false')
-        switchBtn.title = panelOpen ? '收起调试面板' : '打开调试面板'
+        const verSuffix = versionLabel ? ' · ' + versionLabel : ''
+        switchBtn.title = panelOpen ? '收起调试面板' + verSuffix : '打开调试面板' + verSuffix
       }
       if (panelOpen) {
         switchTab(activeTab)
@@ -375,7 +388,12 @@
         '调<span class="vcd-badge" hidden></span></button>' +
         '<div class="vcd-panel" hidden>' +
         '<div class="vcd-panel__head">' +
-        '<span class="vcd-panel__title">调试</span>' +
+        '<div class="vcd-panel__title-wrap">' +
+        '<span class="vcd-panel__title">virtual-chromo</span>' +
+        (versionLabel
+          ? '<span class="vcd-panel__ver">' + escapeHtml(versionLabel) + '</span>'
+          : '') +
+        '</div>' +
         '<div class="vcd-panel__actions">' +
         '<button type="button" class="vcd-btn" data-action="clear" title="清空当前页">清空</button>' +
         '<button type="button" class="vcd-btn vcd-btn--close" data-action="close" title="关闭" aria-label="关闭">×</button>' +
@@ -403,7 +421,9 @@
         '.vcd-panel.vcd-panel--open,.vcd-panel:not([hidden]){display:flex}' +
         '.vcd-panel[hidden]{display:none!important}' +
         '.vcd-panel__head{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#25262b;border-bottom:1px solid #343a40}' +
+        '.vcd-panel__title-wrap{display:flex;flex-direction:column;gap:1px;min-width:0}' +
         '.vcd-panel__title{font-weight:600;font-size:11px;color:#ced4da}' +
+        '.vcd-panel__ver{font-size:10px;font-weight:400;color:#868e96;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}' +
         '.vcd-panel__actions{display:flex;gap:4px;align-items:center}' +
         '.vcd-btn{border:0;border-radius:4px;padding:3px 8px;background:#373a40;color:#dee2e6;cursor:pointer;font:inherit}' +
         '.vcd-btn:hover{background:#495057}' +
@@ -441,7 +461,12 @@
       msgList = root.querySelector('[data-pane="msg"]')
       stateView = root.querySelector('[data-pane="state"]')
 
-      root.querySelector('.vcd-switch').addEventListener('click', function (e) {
+      const switchBtn = root.querySelector('.vcd-switch')
+      if (switchBtn && versionLabel) {
+        switchBtn.title = 'virtual-chromo ' + versionLabel
+      }
+
+      switchBtn.addEventListener('click', function (e) {
         e.preventDefault()
         e.stopPropagation()
         togglePanel()
@@ -477,10 +502,13 @@
     }
 
     /**
-     * @param {{ beforeUnload?: boolean }} [options]
+     * @param {{ beforeUnload?: boolean, version?: string, build?: string }} [options]
      */
     function init(options) {
       options = options || {}
+      if (options.version) {
+        setVersionLabel(options.version, options.build)
+      }
       if (root) {
         return
       }
@@ -489,7 +517,7 @@
       if (options.beforeUnload !== false) {
         installBeforeUnload()
       }
-      addLog('info', ['debug panel ready'])
+      addLog('info', ['debug panel ready', versionLabel || ''])
     }
 
     /**
@@ -593,6 +621,7 @@
     const state = readContentState()
     return {
       version: VERSION,
+      build: BUILD,
       swReady,
       loading,
       contentUrl: state.url || currentContentUrl || '',
@@ -624,7 +653,7 @@
     contentFrame.addEventListener('error', onContentError)
 
     DebugPanel.setStateProvider(getDebugState)
-    DebugPanel.init({ beforeUnload: true })
+    DebugPanel.init({ beforeUnload: true, version: VERSION, build: BUILD })
 
     if (swReady) {
       emitReady()
@@ -1203,7 +1232,8 @@
   }
 
   function emitReady() {
-    postToParent('VC_READY', { version: VERSION })
+    postToParent('VC_READY', { version: VERSION, build: BUILD })
+    vlog('info', ['virtual-chromo bridge v' + VERSION + ' (build ' + BUILD + ')'])
   }
 
   /**

@@ -1,17 +1,23 @@
 /**
  * virtual-chromo injected script — runs in proxied page context (via conf inject_html).
  * Hooks console, noop native dialogs, forwards entries to viewer bridge via postMessage.
+ * Keep VC_VERSION / VC_BUILD in sync with public/conf.js and public/sw.js.
  */
 ;(function () {
   'use strict'
+
+  var VC_VERSION = '1.3.0'
+  var VC_BUILD = '20260727-v2'
 
   if (window.__vcInjected) {
     return
   }
   window.__vcInjected = true
+  window.__vcInjectVersion = VC_VERSION
+  window.__vcInjectBuild = VC_BUILD
 
-  const CHANNEL = '_VC_INJECT'
-  const DIALOG_TAG = '[virtual-chromo] native dialog skipped:'
+  var CHANNEL = '_VC_INJECT'
+  var DIALOG_TAG = '[virtual-chromo] native dialog skipped:'
 
   /**
    * @param {unknown} value
@@ -65,10 +71,10 @@
     }
   }
 
-  const levels = ['log', 'info', 'warn', 'error', 'debug']
-  for (let i = 0; i < levels.length; i++) {
-    const level = levels[i]
-    const original = console[level]
+  var levels = ['log', 'info', 'warn', 'error', 'debug']
+  for (var i = 0; i < levels.length; i++) {
+    var level = levels[i]
+    var original = console[level]
     if (typeof original !== 'function') {
       continue
     }
@@ -107,4 +113,8 @@
     ])
     return null
   }
+
+  console.info(
+    '[virtual-chromo] inject.js v' + VC_VERSION + ' (build ' + VC_BUILD + ')',
+  )
 })()

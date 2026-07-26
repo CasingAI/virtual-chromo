@@ -273,7 +273,7 @@
         switch (cmd) {
           case 'VC_READY':
             ready = true
-            setStatus('已就绪 v' + (payload && payload.version || '?'))
+            setStatus('已就绪 v' + (payload && payload.version || '?') + ' build ' + (payload && payload.build || '?'))
             navigate('https://example.com')
             break
           case 'VC_NAVIGATING':

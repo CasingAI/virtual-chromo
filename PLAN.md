@@ -217,5 +217,6 @@ src/client/
 ## 相关文档
 
 - [docs/protocol.md](docs/protocol.md) — postMessage 协议
+- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — 已知问题（click、inject、console 等）
 - [docs/parent-demo.html](docs/parent-demo.html) — 父项目接入示例
 - [README.md](README.md) — 开发与部署

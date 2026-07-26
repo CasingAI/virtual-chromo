@@ -202,7 +202,7 @@ VC_NAVIGATING → VC_LOADING(true) → VC_NAVIGATED → VC_LOADING(false)
 Service Worker 注册完成，可接收导航命令。
 
 ```javascript
-// ['VC_READY', { version: '1.0.0' }]
+// ['VC_READY', { version: '1.3.0', build: '20260727-v2' }]
 ```
 
 ### `VC_NAVIGATING`
@@ -316,7 +316,7 @@ Service Worker 注册完成，可接收导航命令。
 
 **DevTools 式实时 UI**：监听 `VC_CONSOLE_UPDATED` → 用 `after: lastSeenId` 调 `VC_CONSOLE_READ` 增量追加。
 
-注入方式：[`public/conf.js`](../public/conf.js) 的 `inject_html` 经 jsproxy 插入代理 HTML（helper 之后、页面脚本之前）。实现见 [`public/inject.js`](../public/inject.js)。
+注入方式：[`public/conf.js`](../public/conf.js) 的 `inject_html` 使用 **Worker 绝对 URL**（prepended HTML 含 `<base href="目标站">`，相对路径会解析错）。版本：`VC_VERSION` / `VC_BUILD`；inject 启动日志 `[virtual-chromo] inject.js v...`；内层 iframe 可查 `window.__vcInjected`。
 
 ### 内部通道：`_VC_INJECT`（不对外）
 
