@@ -1,11 +1,12 @@
 // Bump VC_BUILD when bridge / inject / conf change. Keep in sync with public/sw.js.
-var VC_VERSION = '1.3.0'
-var VC_BUILD = '20260727-v2'
+// Assign on self (no var/let/const) so importScripts + periodic re-eval never redeclare.
+self.VC_VERSION = '1.3.0'
+self.VC_BUILD = '20260727-v3'
 
 jsproxy_config({
   ver: '1',
-  vc_version: VC_VERSION,
-  vc_build: VC_BUILD,
+  vc_version: self.VC_VERSION,
+  vc_build: self.VC_BUILD,
 
   node_map: {
     local: {
@@ -25,6 +26,6 @@ jsproxy_config({
     '<script src="' +
     self.location.origin +
     '/inject.js?b=' +
-    VC_BUILD +
+    self.VC_BUILD +
     '"><\/script>',
 })
