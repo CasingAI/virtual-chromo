@@ -56,7 +56,7 @@ npm run deploy
 iframe.contentWindow.postMessage(['VC_NAVIGATE', { url: 'https://example.com' }], '*')
 ```
 
-完整协议见 [docs/protocol.md](docs/protocol.md)，示例见 [docs/parent-demo.html](docs/parent-demo.html)。
+完整协议见 [docs/protocol.md](docs/protocol.md)（含 `VC_EVAL` 在子页面执行 JS），示例见 [docs/parent-demo.html](docs/parent-demo.html)。
 
 ## 注意事项
 

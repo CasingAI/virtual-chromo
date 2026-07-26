@@ -55,6 +55,49 @@ iframe.contentWindow.postMessage(['VC_RELOAD'], '*')
 iframe.contentWindow.postMessage(['VC_PING'], '*')
 ```
 
+### `VC_EVAL`
+
+在当前已加载的**内层子页面**中执行 JavaScript，并异步返回结果。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_EVAL', {
+  id: 'req-1',           // 必填，父页面生成的请求 ID，用于匹配响应
+  code: 'document.title' // 必填，在子页面 global 作用域下执行的 JS 代码
+}], '*')
+```
+
+说明：
+
+- 代码通过子页面 `window.eval()` 执行，可写表达式或多行语句
+- 若返回值是 `Promise`，会等待 resolve 后再回传
+- 返回值经 JSON 序列化；无法序列化的类型会包装为 `{ __vc: ... }`
+- 子页面尚未加载完成时返回 `EVAL_NO_CONTENT`
+
+父页面辅助函数示例：
+
+```javascript
+function vcEval(iframe, code) {
+  return new Promise((resolve, reject) => {
+    const id = crypto.randomUUID()
+    function onMessage(event) {
+      if (event.source !== iframe.contentWindow) return
+      if (!Array.isArray(event.data)) return
+      const [cmd, payload] = event.data
+      if (cmd !== 'VC_EVAL_RESULT' || payload.id !== id) return
+      window.removeEventListener('message', onMessage)
+      if (payload.ok) resolve(payload.value)
+      else reject(Object.assign(new Error(payload.error.message), payload.error))
+    }
+    window.addEventListener('message', onMessage)
+    iframe.contentWindow.postMessage(['VC_EVAL', { id, code }], '*')
+  })
+}
+
+// 用法
+const title = await vcEval(iframe, 'document.title')
+const html = await vcEval(iframe, 'document.body.innerHTML.slice(0, 200)')
+```
+
 ## iframe → 父（事件）
 
 ### `VC_READY`
@@ -116,6 +159,37 @@ Service Worker 注册完成，可接收导航命令。
 | `SW_REGISTER_FAILED` | SW 注册失败 |
 | `HISTORY_ERROR` | 历史导航失败 |
 | `RELOAD_ERROR` | 刷新失败 |
+| `EVAL_BAD_REQUEST` | `VC_EVAL` 缺少 `id` |
+| `EVAL_BAD_CODE` | `VC_EVAL` 缺少合法 `code` |
+| `EVAL_NO_FRAME` | 内层 iframe 不存在 |
+| `EVAL_NO_CONTENT` | 子页面尚未加载 |
+| `EVAL_ACCESS_DENIED` | 无法访问子页面（跨域等） |
+| `EVAL_RUNTIME` | 子页面内执行报错 |
+
+### `VC_EVAL_RESULT`
+
+`VC_EVAL` 的响应。
+
+```javascript
+// 成功
+// ['VC_EVAL_RESULT', { id: 'req-1', ok: true, value: 'Example Domain' }]
+
+// 失败
+// ['VC_EVAL_RESULT', {
+//   id: 'req-1',
+//   ok: false,
+//   error: { message: '...', code: 'EVAL_RUNTIME', stack?: '...' }
+// }]
+```
+
+特殊返回值包装：
+
+| value | 含义 |
+|-------|------|
+| `{ __vc: 'undefined' }` | 表达式结果为 `undefined` |
+| `{ __vc: 'function', name: '...' }` | 函数 |
+| `{ __vc: 'bigint', value: '...' }` | BigInt |
+| `{ __vc: 'unserializable', ... }` | 无法 JSON 序列化（如 DOM 节点） |
 
 ### `VC_PONG`
 
@@ -131,7 +205,8 @@ Service Worker 注册完成，可接收导航命令。
 2. 监听 `message`，等待 `VC_READY`
 3. 发送 `VC_NAVIGATE` 加载首页
 4. 监听 `VC_NAVIGATED` 更新地址栏与导航按钮状态
-5. 用户点击后退/前进/刷新时发送对应命令
+5. 需要操作子页面 DOM/JS 时，发送 `VC_EVAL` 并等待 `VC_EVAL_RESULT`
+6. 用户点击后退/前进/刷新时发送对应命令
 
 ## 嵌入示例
 

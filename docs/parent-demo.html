@@ -67,6 +67,7 @@
     <button id="btnReload" type="button" title="刷新">↻</button>
     <input id="urlInput" type="text" placeholder="输入 URL 后按 Enter" spellcheck="false">
     <button id="btnGo" type="button">前往</button>
+    <button id="btnEval" type="button" title="在子页面执行 document.title">Eval</button>
   </div>
   <div id="status">等待 virtual-chromo 就绪…</div>
   <div id="frameWrap">
@@ -88,14 +89,25 @@
       const btnForward = document.getElementById('btnForward')
       const btnReload = document.getElementById('btnReload')
       const btnGo = document.getElementById('btnGo')
+      const btnEval = document.getElementById('btnEval')
 
       let ready = false
       let currentUrl = ''
+      /** @type {Map<string, { resolve: Function, reject: Function }>} */
+      const evalWaiters = new Map()
 
       function post(cmd, payload) {
         if (!iframe.contentWindow) return
         const msg = payload === undefined ? [cmd] : [cmd, payload]
         iframe.contentWindow.postMessage(msg, '*')
+      }
+
+      function vcEval(code) {
+        return new Promise(function (resolve, reject) {
+          const id = crypto.randomUUID()
+          evalWaiters.set(id, { resolve: resolve, reject: reject })
+          post('VC_EVAL', { id: id, code: code })
+        })
       }
 
       function setStatus(text) {
@@ -144,6 +156,19 @@
           case 'VC_PONG':
             setStatus('pong')
             break
+          case 'VC_EVAL_RESULT': {
+            const waiter = payload && evalWaiters.get(payload.id)
+            if (!waiter) break
+            evalWaiters.delete(payload.id)
+            if (payload.ok) {
+              waiter.resolve(payload.value)
+            } else {
+              const err = new Error(payload.error && payload.error.message || 'eval failed')
+              Object.assign(err, payload.error || {})
+              waiter.reject(err)
+            }
+            break
+          }
         }
       })
 
@@ -155,6 +180,20 @@
       })
       urlInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') navigate(urlInput.value)
+      })
+      btnEval.addEventListener('click', function () {
+        if (!ready) {
+          setStatus('virtual-chromo 尚未就绪')
+          return
+        }
+        vcEval('document.title')
+          .then(function (value) {
+            setStatus('eval document.title => ' + JSON.stringify(value))
+          })
+          .catch(function (err) {
+            setStatus('eval 失败: ' + err.message)
+            console.error('[virtual-chromo eval]', err)
+          })
       })
     })()
   </script>

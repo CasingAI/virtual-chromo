@@ -5,7 +5,7 @@
 ;(function () {
   'use strict'
 
-  const VERSION = '1.0.0'
+  const VERSION = '1.1.0'
   const PROXY_PREFIX = '/-----'
 
   /** @type {string[]|null} */
@@ -73,6 +73,9 @@
       case 'VC_PING':
         postToParent('VC_PONG')
         break
+      case 'VC_EVAL':
+        evalInContent(payload)
+        break
       default:
         break
     }
@@ -136,6 +139,122 @@
         err instanceof Error ? err.message : 'reload failed',
         'RELOAD_ERROR'
       )
+    }
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  async function evalInContent(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    const code = typeof data.code === 'string' ? data.code : null
+
+    function replyError(message, code, stack) {
+      postToParent('VC_EVAL_RESULT', {
+        id,
+        ok: false,
+        error: { message, code, stack },
+      })
+    }
+
+    if (!id) {
+      emitError('VC_EVAL requires payload.id', 'EVAL_BAD_REQUEST')
+      return
+    }
+    if (code === null) {
+      replyError('VC_EVAL requires payload.code string', 'EVAL_BAD_CODE')
+      return
+    }
+    if (!contentFrame) {
+      replyError('content iframe not found', 'EVAL_NO_FRAME')
+      return
+    }
+
+    if (!readContentState().url) {
+      replyError('no page loaded in content iframe', 'EVAL_NO_CONTENT')
+      return
+    }
+
+    /** @type {Window|null} */
+    let win = null
+    try {
+      win = contentFrame.contentWindow
+      if (!win) {
+        throw new Error('content window unavailable')
+      }
+      void win.document
+    } catch (err) {
+      replyError(
+        err instanceof Error ? err.message : 'cannot access content window',
+        'EVAL_ACCESS_DENIED'
+      )
+      return
+    }
+
+    try {
+      const raw = win.eval(code)
+      const value = await resolveMaybePromise(raw)
+      postToParent('VC_EVAL_RESULT', {
+        id,
+        ok: true,
+        value: serializeValue(value),
+      })
+    } catch (err) {
+      replyError(
+        err instanceof Error ? err.message : String(err),
+        'EVAL_RUNTIME',
+        err instanceof Error ? err.stack : undefined
+      )
+    }
+  }
+
+  /**
+   * @param {unknown} value
+   */
+  async function resolveMaybePromise(value) {
+    if (value && typeof /** @type {{ then?: unknown }} */ (value).then === 'function') {
+      return /** @type {Promise<unknown>} */ (value)
+    }
+    return value
+  }
+
+  /**
+   * @param {unknown} value
+   */
+  function serializeValue(value) {
+    if (value === undefined) {
+      return { __vc: 'undefined' }
+    }
+    if (value === null) {
+      return null
+    }
+    if (typeof value === 'function') {
+      return { __vc: 'function', name: value.name || 'anonymous' }
+    }
+    if (typeof value === 'symbol') {
+      return { __vc: 'symbol', value: String(value) }
+    }
+    if (typeof value === 'bigint') {
+      return { __vc: 'bigint', value: value.toString() }
+    }
+    if (value instanceof Error) {
+      return {
+        __vc: 'error',
+        name: value.name,
+        message: value.message,
+        stack: value.stack,
+      }
+    }
+    try {
+      JSON.stringify(value)
+      return value
+    } catch {
+      return {
+        __vc: 'unserializable',
+        type: typeof value,
+        string: String(value),
+      }
     }
   }
 
