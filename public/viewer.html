@@ -39,10 +39,10 @@
   <iframe
     id="content"
     title="virtual-chromo content"
-    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
   ></iframe>
 
-  <script src="bridge.js"></script>
+  <script src="/bridge.js"></script>
   <script>
     (function () {
       'use strict'
@@ -206,7 +206,7 @@
         }
 
         // Always register (even if a controller already exists) so we can call update().
-        sw.register('/sw.js?b=20260727-v17')
+        sw.register('/sw.js?b=20260727-v23')
           .then(function (reg) {
             watchForUpdates(reg)
             return onSwReady()

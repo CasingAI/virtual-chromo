@@ -3,13 +3,56 @@
  */
 const CHANNEL = '_VC_INJECT'
 
+const BRIDGE_HANDLERS = {
+  CLICK: '__vcOnInjectClick',
+  LOCATION: '__vcOnInjectLocation',
+  HISTORY: '__vcOnInjectHistory',
+}
+
+/**
+ * @param {string} kind
+ */
+function findBridgeWindow(kind) {
+  const handlerName = BRIDGE_HANDLERS[kind]
+  if (!handlerName || typeof window === 'undefined') {
+    return null
+  }
+  /** @type {Window | null} */
+  let w = window
+  while (w) {
+    try {
+      if (typeof w[handlerName] === 'function') {
+        return w
+      }
+      if (w === w.top) {
+        break
+      }
+      w = w.parent
+    } catch {
+      break
+    }
+  }
+  return null
+}
+
 /**
  * @param {string} kind
  * @param {Record<string, unknown>} payload
  */
 function forward(kind, payload) {
+  const handlerName = BRIDGE_HANDLERS[kind]
+  const bridge = findBridgeWindow(kind)
+  if (bridge && handlerName) {
+    try {
+      bridge[handlerName](payload)
+      return
+    } catch {
+      // fall through
+    }
+  }
+
   const win = typeof window !== 'undefined' ? window : self
-  const fn =
+  const reportFn =
     kind === 'CLICK'
       ? win.__vcReportClick
       : kind === 'LOCATION'
@@ -17,14 +60,15 @@ function forward(kind, payload) {
         : kind === 'HISTORY'
           ? win.__vcReportHistory
           : null
-  if (typeof fn === 'function') {
+  if (typeof reportFn === 'function') {
     try {
-      fn(payload)
+      reportFn(payload)
       return
     } catch {
       // fall through
     }
   }
+
   try {
     win.parent.postMessage([CHANNEL, kind, payload], '*')
   } catch {

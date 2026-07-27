@@ -43,7 +43,7 @@ export function init(global, origin, sessionId) {
   // hook AJAX API
   const xhrProto = global['XMLHttpRequest'].prototype
   hook.func(xhrProto, 'open', oldFn => function(_0, url) {
-    if (url) {
+    if (url && !urlx.isCaptchaPassthroughUrl(String(url))) {
       arguments[1] = urlx.encUrlStrRel(url, this)
     }
     return apply(oldFn, this, arguments)
@@ -63,6 +63,9 @@ export function init(global, origin, sessionId) {
     }
     const url = typeof input === 'string' ? input : input.url
     if (!url) {
+      return apply(oldFn, this, arguments)
+    }
+    if (urlx.isCaptchaPassthroughUrl(url)) {
       return apply(oldFn, this, arguments)
     }
     const newUrl = urlx.encUrlStrAbs(url)

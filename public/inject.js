@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260727-v16'
+  var VC_BUILD = '20260727-v23'
 
   if (window.__vcInjected) {
     return
@@ -132,22 +132,30 @@
   }
 
   function forwardInject(kind, payload) {
-    try {
-      var bridge = window.parent
-      if (kind === 'CLICK' && bridge && typeof bridge.__vcOnInjectClick === 'function') {
-        bridge.__vcOnInjectClick(payload)
-        return
+    var handlerName =
+      kind === 'CLICK'
+        ? '__vcOnInjectClick'
+        : kind === 'LOCATION'
+          ? '__vcOnInjectLocation'
+          : kind === 'HISTORY'
+            ? '__vcOnInjectHistory'
+            : null
+    if (handlerName) {
+      var w = window
+      while (w) {
+        try {
+          if (typeof w[handlerName] === 'function') {
+            w[handlerName](payload)
+            return
+          }
+          if (w === w.top) {
+            break
+          }
+          w = w.parent
+        } catch {
+          break
+        }
       }
-      if (kind === 'LOCATION' && bridge && typeof bridge.__vcOnInjectLocation === 'function') {
-        bridge.__vcOnInjectLocation(payload)
-        return
-      }
-      if (kind === 'HISTORY' && bridge && typeof bridge.__vcOnInjectHistory === 'function') {
-        bridge.__vcOnInjectHistory(payload)
-        return
-      }
-    } catch {
-      // ignore
     }
     try {
       window.parent.postMessage([CHANNEL, kind, payload], '*')
@@ -200,6 +208,9 @@
   document.addEventListener(
     'click',
     function (event) {
+      if (document.__vcPassiveNavInstalled) {
+        return
+      }
       if (!event.isTrusted) {
         return
       }

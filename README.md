@@ -94,7 +94,7 @@ npm run deploy
 <iframe
   id="chromo"
   src="https://your-worker.workers.dev/s/YOUR-SESSION-UUID/"
-  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+  sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
   style="width:100%;height:100%;border:none"
 ></iframe>
 ```

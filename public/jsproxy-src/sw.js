@@ -427,10 +427,23 @@ function isPassthroughHost(host) {
 
 
 /**
- * Direct fetch for Turnstile scripts/iframes (skip Worker proxy rewrite).
- * @param {Request} req
+ * Direct vendor CAPTCHA assets (Turnstile + reCAPTCHA) — skip proxy rewrite.
+ * @param {string} targetUrlStr
  */
-function shouldPassthroughTurnstile(req) {
+function isCaptchaPassthroughTarget(targetUrlStr) {
+  return urlx.isTurnstileAbsoluteUrl(targetUrlStr) || urlx.isRecaptchaUrl(targetUrlStr)
+}
+
+
+/**
+ * Direct fetch for CAPTCHA scripts/iframes (skip Worker proxy rewrite).
+ * @param {Request} req
+ * @param {string} targetUrlStr
+ */
+function shouldPassthroughCaptcha(req, targetUrlStr) {
+  if (!isCaptchaPassthroughTarget(targetUrlStr)) {
+    return false
+  }
   if (req.destination === 'script') {
     return true
   }
@@ -438,6 +451,10 @@ function shouldPassthroughTurnstile(req) {
     req.mode === 'navigate' &&
     (req.destination === 'iframe' || req.destination === '')
   ) {
+    return true
+  }
+  // reCAPTCHA also uses fetch/XHR to google.com/recaptcha/*
+  if (urlx.isRecaptchaUrl(targetUrlStr)) {
     return true
   }
   return false
@@ -593,15 +610,20 @@ async function onFetch(e) {
   let targetUrlStr = urlx.decUrlStrAbs(urlStr)
 
   const passthroughObj = urlx.newUrl(targetUrlStr)
-  if (passthroughObj && isPassthroughHost(passthroughObj.hostname)) {
+  if (passthroughObj && isCaptchaPassthroughTarget(targetUrlStr)) {
     if (req.method === 'OPTIONS') {
       return turnstilePreflightResponse(req)
     }
     if (req.destination === 'script' && urlx.isTurnstileApiJsUrl(urlStr)) {
       return passthroughTurnstileScript(req, urlStr, targetUrlStr)
     }
-    if (shouldPassthroughTurnstile(req)) {
+    if (shouldPassthroughCaptcha(req, targetUrlStr)) {
       return passthroughFetch(req, urlStr, targetUrlStr)
+    }
+  } else if (passthroughObj && isPassthroughHost(passthroughObj.hostname)) {
+    // Turnstile non-asset requests: still allow CORS preflight helper path below via forward()
+    if (req.method === 'OPTIONS') {
+      return turnstilePreflightResponse(req)
     }
   }
 

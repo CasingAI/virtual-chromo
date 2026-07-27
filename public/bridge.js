@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v17'
+  const BUILD = '20260727-v23'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -640,6 +640,9 @@
   /** @type {boolean} */
   let swReady = false
 
+  /** @type {string|null} */
+  let pendingNavigateUrl = null
+
   /** Last known real URL for the content iframe (used when cross-origin blocks location access). */
   /** @type {string} */
   let currentContentUrl = ''
@@ -752,6 +755,12 @@
     swReady = true
     vlog('info', ['service worker ready'])
     emitReady()
+    const queued = pendingNavigateUrl
+    pendingNavigateUrl = null
+    if (queued) {
+      vlog('info', ['flushing queued navigate:', queued])
+      applyNavigate(queued)
+    }
   }
 
   const MSG_SW_SESSION_DESTROY = 300
@@ -824,6 +833,20 @@
   }
 
   /**
+   * @param {string} url
+   */
+  function applyNavigate(url) {
+    if (!contentFrame) {
+      return
+    }
+    currentContentUrl = url
+    recordHistory('navigate', url)
+    emitNavigating(url)
+    emitLoading(true)
+    contentFrame.src = toProxyUrl(url)
+  }
+
+  /**
    * @param {unknown} payload
    */
   function navigate(payload) {
@@ -839,11 +862,16 @@
       return
     }
 
-    currentContentUrl = url
-    recordHistory('navigate', url)
-    emitNavigating(url)
-    emitLoading(true)
-    contentFrame.src = toProxyPath(url)
+    if (!swReady) {
+      pendingNavigateUrl = url
+      vlog('info', ['navigate queued (SW not ready):', url])
+      emitNavigating(url)
+      emitLoading(true)
+      return
+    }
+
+    pendingNavigateUrl = null
+    applyNavigate(url)
   }
 
   /**
@@ -891,7 +919,7 @@
 
     // Re-assign proxy src from last known URL or the iframe's current src attribute.
     const proxySrc =
-      (currentContentUrl && toProxyPath(currentContentUrl)) ||
+      (currentContentUrl && toProxyUrl(currentContentUrl)) ||
       contentFrame.getAttribute('src') ||
       contentFrame.src
 
@@ -1079,6 +1107,11 @@
     const data = /** @type {{ ts?: number, tagName?: string, href?: string, target?: string, text?: string, id?: string, className?: string }} */ (
       payload
     )
+    vlog('info', [
+      'content click:',
+      data.tagName || '?',
+      data.href || data.text || '',
+    ])
     postToParent('VC_CLICK', {
       ts: typeof data.ts === 'number' ? data.ts : Date.now(),
       tagName: typeof data.tagName === 'string' ? data.tagName : '',
@@ -1266,6 +1299,10 @@
   }
 
   function onContentError() {
+    // 跨域逃跑时部分浏览器会打 error；优先拉回代理，而不是直接报失败
+    if (recoverEscapedContent()) {
+      return
+    }
     emitLoadFailed(
       currentContentUrl || '',
       'content iframe failed to load',
@@ -1285,7 +1322,8 @@
     try {
       doc = contentFrame.contentDocument
     } catch {
-      return Boolean(currentContentUrl)
+      // 跨域 = 已逃出代理；交给 recoverEscapedContent，不当作网络失败
+      return false
     }
 
     if (!doc) {
@@ -1370,14 +1408,42 @@
     recordHistory('recover', escapedUrl)
     emitNavigating(escapedUrl)
     emitLoading(true)
-    contentFrame.src = toProxyPath(escapedUrl)
+    contentFrame.src = toProxyUrl(escapedUrl)
     return true
   }
 
   /**
+   * Live location may differ from the src attribute (attribute often stays on the
+   * original proxy URL after a client-side escape).
    * @returns {string|null}
    */
   function readEscapedExternalUrl() {
+    if (!contentFrame) {
+      return null
+    }
+
+    // Cross-origin ⇒ definitely escaped; cannot read href — re-proxy last intent.
+    try {
+      void contentFrame.contentDocument
+    } catch {
+      return currentContentUrl || null
+    }
+
+    try {
+      const win = contentFrame.contentWindow
+      if (win) {
+        const href = win.location.href
+        if (href && href !== 'about:blank') {
+          const live = new URL(href)
+          if (live.origin !== window.location.origin) {
+            return live.href
+          }
+        }
+      }
+    } catch {
+      return currentContentUrl || null
+    }
+
     const rawSrc = contentFrame.getAttribute('src') || contentFrame.src || ''
     if (!rawSrc || rawSrc.includes(PROXY_PREFIX)) {
       return null
@@ -1454,6 +1520,14 @@
       return PROXY_PREFIX + normalized
     }
     return '/s/' + encodeURIComponent(sessionId) + PROXY_PREFIX + normalized
+  }
+
+  /**
+   * Absolute proxy URL for #content (avoids relative-path resolution bugs under /s/<id>/).
+   * @param {string} url
+   */
+  function toProxyUrl(url) {
+    return new URL(toProxyPath(url), location.href).href
   }
 
   /**

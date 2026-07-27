@@ -115,7 +115,34 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 ---
 
-## Console 上报与 Debug Panel
+## 点击未被拦截 / 调试面板无 `VC_CLICK`
+
+### 现象
+
+- 点链接在外部浏览器 tab 打开，或 iframe 直接跳到非代理 URL
+- viewer 调试面板「通讯」里没有 `VC_CLICK`，「日志」里也没有 `content click:`
+
+### 常见原因
+
+| 原因 | 说明 |
+|------|------|
+| **旧 SW / 旧 bundle 缓存** | 硬刷新 viewer，或 DevTools → Application → Service Workers → Unregister |
+| **SW 未就绪就导航**（build `< v20`） | `VC_NAVIGATE` 在 SW 安装前设置 `#content.src`，`adjustNav` 可能误跳 Google 搜索；v20+ bridge 会排队到 `swDidReady` |
+| **点击发生在嵌套 iframe 内** | 仅代理页**顶层 document**（及同源子 frame）会拦截；跨域 iframe 内无法 hook |
+| **仅依赖 inject.js**（build `< v19`） | inject 未加载则完全无拦截；v19+ 在 `page.js` / bundle 侧也有 capture |
+| **sandbox `allow-popups`**（已修 v19+） | 会允许 `target=_blank` 开真 tab；viewer 已去掉该权限 |
+
+### 自检（在内层 **content iframe** Console）
+
+```javascript
+window.__vcInjected          // true
+window.__vcInjectBuild       // 应为当前 VC_BUILD，如 "20260727-v19"
+document.__vcPassiveNavInstalled  // true（v19+ bundle 侧 capture 已装）
+```
+
+调试面板「日志」里点击链接应出现 `content click: A https://...`；「通讯」里应出现 `→ 上级 VC_CLICK`。
+
+---
 
 | 组件 | 能看到什么 |
 |------|------------|
@@ -129,6 +156,30 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 **结论：virtual-chromo 可加载 Turnstile 前端（api.js + widget iframe），但无法可靠完成 Cloudflare 服务端验证。**  
 第三方站点基本不可用；自有站点可在 Turnstile widget 白名单中加入 Worker 域名后**偶尔**改善，仍不保证。
+
+### reCAPTCHA iframe `src` 写成 `google.com/-----https://google.com/...`（build `< v22`）
+
+**现象**：`recaptcha-demo.appspot.com` 等页里 reCAPTCHA iframe 空白；DevTools 里 `src` 为  
+`https://www.google.com/-----https://www.google.com/recaptcha/api2/anchor?...`
+
+**根因**：Session 改造后 [`urlx.encUrlObj`](../public/jsproxy-src/urlx.js) 误用**目标站** `urlObj.origin` 拼代理前缀，应使用 Worker / 当前页 origin。
+
+**修复**：build `20260727-v22`+ 改为用 `path.ROOT` / `location.origin` 作为 proxy origin；`v23`+ 页内编码改回优先 `path.PREFIX`（带 `/s/{id}/`）。
+
+### reCAPTCHA 被当成代理子页（build `< v23`）
+
+**现象**：Console 出现 `[jsproxy] child page inited. .../-----https://www.google.com/recaptcha/...`，页面提示  
+`Could not connect to the reCAPTCHA service`。
+
+**根因**：iframe/fetch 被改写成 Worker 代理 URL，jsproxy 在 Google iframe 里初始化，origin/postMessage 全错。
+
+**修复（v23+，对齐 Turnstile）**：
+- iframe `src` / fetch / XHR：`www.google.com/recaptcha`、`www.gstatic.com/recaptcha`、`recaptcha.net` **直连不代理**
+- CSP `frame-src` 放行上述域名
+- `MessageEvent.origin` / `postMessage` 保留 Google origin
+
+**仍可能失败（v23 实测）**：widget iframe 已直连 Google，Console 不再有 `child page inited` / `Could not connect`；但 Google 仍报  
+「网站密钥的网域无效 / Invalid domain for site key」——浏览器真实父 origin 是 Worker 域名，不在 site key 白名单。属已知 CAPTCHA 限制，客户端无法可靠绕过。
 
 ### 典型现象
 

@@ -8,6 +8,7 @@ import * as jsfilter from './jsfilter.js'
 import * as env from './env.js'
 import * as client from './client.js'
 import * as vcReport from './vc-report.js'
+import * as passiveNav from './vc-passive-nav.js'
 import * as session from './session.js'
 import {handleStoragePush, clearSessionStorage, setStorageMessenger} from './storage.js'
 
@@ -418,7 +419,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     getter => function() {
       const realOrigin = getter.call(this)
       try {
-        if (urlx.isTurnstileHost(new URL(realOrigin).hostname)) {
+        if (urlx.isCaptchaVendorHost(new URL(realOrigin).hostname)) {
           return realOrigin
         }
       } catch {
@@ -433,7 +434,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hook.func(win, 'postMessage', oldFn => function(msg, origin) {
     if (origin && origin !== '*') {
       try {
-        if (urlx.isTurnstileHost(new URL(origin).hostname)) {
+        if (urlx.isCaptchaVendorHost(new URL(origin).hostname)) {
           return apply(oldFn, this, arguments)
         }
       } catch {
@@ -522,7 +523,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
           return ''
         }
         const {doc} = env.get(this)
-        if (urlx.isTurnstileAbsoluteUrl(val, doc.baseURI)) {
+        if (urlx.isCaptchaPassthroughUrl(val, doc.baseURI)) {
           return val
         }
         return urlx.decUrlStrRel(val, this)
@@ -532,7 +533,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
           return val
         }
         const {doc} = env.get(this)
-        if (urlx.isTurnstileAbsoluteUrl(val, doc.baseURI)) {
+        if (urlx.isCaptchaPassthroughUrl(val, doc.baseURI)) {
           return val
         }
         return urlx.encUrlStrRel(val, this)
@@ -830,4 +831,6 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   //     hookEvent(v)
   //   }
   // })
+
+  passiveNav.installTrustedClickCapture(document)
 }

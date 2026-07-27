@@ -36,11 +36,15 @@ filesystem: \
 chrome-extension-resource: \
 `
 
-// Turnstile widget iframes load directly from Cloudflare (see page.js hookFrameSrc).
-const TURNSTILE_FRAME_SRC = `\
+// CAPTCHA widget iframes load directly from vendor (see page.js hookFrameSrc).
+const CAPTCHA_FRAME_SRC = `\
 https://challenges.cloudflare.com \
 https://challenges.fed.cloudflare.com \
 https://challenges.cloudflare-cn.com \
+https://www.google.com \
+https://www.gstatic.com \
+https://www.recaptcha.net \
+https://recaptcha.net \
 `
 
 /**
@@ -55,7 +59,7 @@ export function getHtmlCode(urlObj, pageId) {
 <!-- JS PROXY HELPER -->
 <!doctype html>
 <link rel="icon" href="${icoUrl}" type="image/x-icon">
-<meta http-equiv="content-security-policy" content="frame-src ${CSP}${TURNSTILE_FRAME_SRC}; object-src ${CSP}">
+<meta http-equiv="content-security-policy" content="frame-src ${CSP}${CAPTCHA_FRAME_SRC}; object-src ${CSP}">
 <base href="${urlObj.href}">
 <script data-id="${pageId}" src="${path.HELPER}"></script>
 ${custom}

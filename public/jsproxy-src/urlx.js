@@ -25,6 +25,26 @@ export function isTurnstileHost(host) {
 }
 
 
+/** @param {string} host */
+export function isRecaptchaHost(host) {
+  return host === 'www.google.com' ||
+    host === 'google.com' ||
+    host === 'www.gstatic.com' ||
+    host === 'gstatic.com' ||
+    host === 'www.recaptcha.net' ||
+    host === 'recaptcha.net'
+}
+
+
+/**
+ * CAPTCHA vendor origins that must keep real MessageEvent.origin / postMessage target.
+ * @param {string} host
+ */
+export function isCaptchaVendorHost(host) {
+  return isTurnstileHost(host) || isRecaptchaHost(host)
+}
+
+
 /**
  * @param {string} urlStr request or decoded URL
  */
@@ -39,12 +59,44 @@ export function isTurnstileApiJsUrl(urlStr) {
 
 
 /**
+ * Google reCAPTCHA / enterprise widget & api assets.
+ * @param {string} url
+ * @param {string=} baseUrl
+ */
+export function isRecaptchaUrl(url, baseUrl) {
+  const urlObj = newUrl(url, baseUrl)
+  if (!urlObj || !isRecaptchaHost(urlObj.hostname)) {
+    return false
+  }
+  const host = urlObj.hostname
+  const path = urlObj.pathname
+  if (host === 'www.google.com' || host === 'google.com') {
+    return path.includes('/recaptcha')
+  }
+  if (host === 'www.gstatic.com' || host === 'gstatic.com') {
+    return path.includes('/recaptcha')
+  }
+  return true
+}
+
+
+/**
  * @param {string} url
  * @param {string=} baseUrl
  */
 export function isTurnstileAbsoluteUrl(url, baseUrl) {
   const urlObj = newUrl(url, baseUrl)
   return urlObj ? isTurnstileHost(urlObj.hostname) : false
+}
+
+
+/**
+ * iframe/script src that must stay on the real vendor origin (not proxied).
+ * @param {string} url
+ * @param {string=} baseUrl
+ */
+export function isCaptchaPassthroughUrl(url, baseUrl) {
+  return isTurnstileAbsoluteUrl(url, baseUrl) || isRecaptchaUrl(url, baseUrl)
 }
 
 
@@ -82,7 +134,7 @@ function applySessionFromUrl(urlStr) {
 
 
 /**
- * @param {URL | Location} urlObj 
+ * @param {URL | Location} urlObj
  * @param {string=} sessionId
  */
 export function encUrlObj(urlObj, sessionId) {
@@ -91,8 +143,29 @@ export function encUrlObj(urlObj, sessionId) {
     return fullUrl
   }
   const sid = sessionId || session.getCurrentSessionId()
-  const prefix = session.getProxyPrefix(urlObj.origin, sid)
-  return prefix + fullUrl
+
+  // Page context: path.PREFIX already includes /s/{sessionId}/ from real location.
+  // Do NOT use urlObj.origin (target site) — that produced google.com/-----https://...
+  if (!sessionId && !env.isSwEnv() && PREFIX) {
+    return PREFIX + fullUrl
+  }
+
+  let proxyOrigin = ''
+  try {
+    if (path.ROOT && /^https?:/i.test(path.ROOT)) {
+      proxyOrigin = new URL(path.ROOT).origin
+    }
+  } catch {
+    // ignore
+  }
+  if (!proxyOrigin) {
+    try {
+      proxyOrigin = self.location.origin
+    } catch {
+      proxyOrigin = ''
+    }
+  }
+  return session.getProxyPrefix(proxyOrigin, sid) + fullUrl
 }
 
 const IS_SW = env.isSwEnv()
@@ -285,7 +358,10 @@ function padUrl(part) {
 export function adjustNav(urlStr) {
   const parsed = applySessionFromUrl(urlStr)
   const prefix = session.getProxyPrefix(parsed.origin, parsed.sessionId)
-  const prefixLen = prefix.length
+
+  if (session.isViewerHomePath(parsed.restPath)) {
+    return
+  }
 
   const rawUrlStr = parsed.restPath.startsWith(PROXY_MARKER)
     ? parsed.restPath.substr(PROXY_MARKER.length)
@@ -306,9 +382,18 @@ export function adjustNav(urlStr) {
 
   const part = parsed.restPath.replace(/^\/+/, '').replace(/^-+/, '')
 
+  // Mis-encoded session shell paths must not become Google search queries.
+  if (/^s\/[^/]+\/?$/.test(part)) {
+    return
+  }
+
   const ret = getAliasUrl(part) || padUrl(part)
   if (ret) {
     return prefix + ret
+  }
+
+  if (!part) {
+    return
   }
 
   const keyword = part.replace(/&/g, '%26')
