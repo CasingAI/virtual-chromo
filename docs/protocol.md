@@ -87,7 +87,7 @@ iframe.contentWindow.postMessage(['VC_EVAL', {
 | 读元素文本 | `document.querySelector('h1')?.textContent` | — |
 | 批量采集 | `[...document.querySelectorAll('a')].map(a => ({ href: a.href, text: a.textContent }))` | — |
 | 读表单状态 | `document.querySelector('#email')?.value` | — |
-| 点击 | — | 监听 `VC_CLICK`；导航由父级发 `VC_NAVIGATE`（子页不自主跳转） |
+| 点击 | — | 监听 `VC_CLICK`；SPA 路由跟 `VC_HISTORY`；整页换址由父级 `VC_NAVIGATE` |
 | 填表 | — | `const el = document.querySelector('#email'); el.value = 'a@b.c'; el.dispatchEvent(new Event('input', { bubbles: true }))` |
 | 等待元素 | `new Promise(r => { const t = setInterval(() => { if (document.querySelector('.ready')) { clearInterval(t); r(true) } }, 100) })` | — |
 
@@ -195,7 +195,7 @@ await vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', {
 VC_NAVIGATING → VC_LOADING(true) → VC_NAVIGATED → VC_LOADING(false)
 ```
 
-子页面内点击链接、改 `location` **不会**触发上述序列；只会发 `VC_CLICK` / `VC_LOCATION`。父级决定是否再发 `VC_NAVIGATE`。
+子页面内点击链接、改 `location` **不会**触发上述整页加载序列；分别上报 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`（SPA 页内路由）。父级对整页换址再发 `VC_NAVIGATE`。
 
 ### `VC_READY`
 
@@ -255,6 +255,32 @@ Service Worker 注册完成，bridge 可接收导航命令。
 //   url: 'https://example.com/page#section',
 // }]
 ```
+
+### `VC_HISTORY`
+
+子页面 **页内路由**（SPA）：`history.pushState` / `replaceState` / 浏览器 `popstate`（含后退/前进触发的路由变化）。**不**整页 reload；父级无需回复。
+
+与 `VC_NAVIGATED` 的区别：`VC_NAVIGATED` 表示内层 iframe **主文档**加载完成；`VC_HISTORY` 表示**同一文档**内 URL 变化（React Router、Vue Router history 模式等）。
+
+```javascript
+// ['VC_HISTORY', {
+//   ts: 1730000000000,
+//   method: 'pushState',   // 'pushState' | 'replaceState' | 'popstate'
+//   url: 'https://example.com/about',
+//   title: 'About',
+//   state: { ... },        // history.state；不可序列化时为 { __vc: 'unserializable' }
+// }]
+```
+
+**父级处理建议**：
+
+| 事件 | 建议 |
+|------|------|
+| `VC_CLICK` | 记录点击意图；**不要**默认对有 `href` 的链接立刻 `VC_NAVIGATE` |
+| `VC_HISTORY` | 更新地址栏 / 会话状态；表示 SPA 已在页内完成路由 |
+| `VC_LOCATION` | 子页想**整页**换地址；再决定是否 `VC_NAVIGATE` |
+
+典型 SPA 点击 `<Link href="/about">`：`VC_CLICK` → 子页 `pushState` → `VC_HISTORY`（父级只同步 URL，不 reload）。
 
 ### `VC_LOADING`
 
@@ -348,7 +374,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 
 ### 内部通道：`_VC_INJECT` / `__vcOnInjectConsole`（不对外）
 
-`inject.js` → `bridge.js`：优先调用 viewer 上的 `__vcOnInjectConsole(entry)` / `__vcOnInjectClick` / `__vcOnInjectLocation`（绕过 jsproxy 对 `postMessage` 的 hook）；回退 `['_VC_INJECT', kind, payload]`（kind 为 `CONSOLE` | `CLICK` | `LOCATION`）。**父项目不应监听或发送**；对外分别对应 `VC_CONSOLE_*`、`VC_CLICK`、`VC_LOCATION`。
+`inject.js` → `bridge.js`：优先调用 viewer 上的 `__vcOnInjectConsole(entry)` / `__vcOnInjectClick` / `__vcOnInjectLocation` / `__vcOnInjectHistory`（绕过 jsproxy 对 `postMessage` 的 hook）；回退 `['_VC_INJECT', kind, payload]`（kind 为 `CONSOLE` | `CLICK` | `LOCATION` | `HISTORY`）。**父项目不应监听或发送**；对外分别对应 `VC_CONSOLE_*`、`VC_CLICK`、`VC_LOCATION`、`VC_HISTORY`。
 
 ### 子页面内：原生 dialog 处理
 

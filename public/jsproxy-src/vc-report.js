@@ -14,7 +14,9 @@ function forward(kind, payload) {
       ? win.__vcReportClick
       : kind === 'LOCATION'
         ? win.__vcReportLocation
-        : null
+        : kind === 'HISTORY'
+          ? win.__vcReportHistory
+          : null
   if (typeof fn === 'function') {
     try {
       fn(payload)
@@ -42,6 +44,13 @@ export function reportClick(payload) {
  */
 export function reportLocation(payload) {
   forward('LOCATION', payload)
+}
+
+/**
+ * @param {Record<string, unknown>} payload
+ */
+export function reportHistory(payload) {
+  forward('HISTORY', payload)
 }
 
 /**

@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260727-v15'
+  var VC_BUILD = '20260727-v16'
 
   if (window.__vcInjected) {
     return
@@ -142,6 +142,10 @@
         bridge.__vcOnInjectLocation(payload)
         return
       }
+      if (kind === 'HISTORY' && bridge && typeof bridge.__vcOnInjectHistory === 'function') {
+        bridge.__vcOnInjectHistory(payload)
+        return
+      }
     } catch {
       // ignore
     }
@@ -158,6 +162,10 @@
 
   window.__vcReportLocation = function (payload) {
     forwardInject('LOCATION', payload)
+  }
+
+  window.__vcReportHistory = function (payload) {
+    forwardInject('HISTORY', payload)
   }
 
   function buildClickPayload(el) {

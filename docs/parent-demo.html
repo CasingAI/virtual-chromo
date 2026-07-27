@@ -317,11 +317,19 @@
             setStatus(
               '点击: ' +
                 (payload && payload.tagName || '?') +
-                (payload && payload.href ? ' → ' + payload.href : ''),
+                (payload && payload.href ? ' → ' + payload.href : '') +
+                '（页内路由等 VC_HISTORY）',
             )
-            if (payload && payload.href) {
-              navigate(payload.href)
-            }
+            break
+          case 'VC_HISTORY':
+            currentUrl = payload && payload.url || currentUrl
+            urlInput.value = currentUrl
+            setStatus(
+              'SPA ' +
+                (payload && payload.method || '?') +
+                ': ' +
+                (payload && payload.title || currentUrl),
+            )
             break
           case 'VC_LOCATION':
             setStatus(

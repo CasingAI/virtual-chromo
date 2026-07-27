@@ -75,7 +75,21 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 父级（Chromo / AI）收到 `VC_CLICK` / `VC_LOCATION` 后自行决定是否 `VC_NAVIGATE`、开 App 内标签或忽略。
 
-实现：`public/inject.js`（真鼠标 capture）、[`public/jsproxy-src/page.js`](../public/jsproxy-src/page.js)（程序化 click / open / submit）、[`public/jsproxy-src/fakeloc.js`](../public/jsproxy-src/fakeloc.js)（location 写入拦截）。
+实现：`public/inject.js`（真鼠标 capture）、[`public/jsproxy-src/page.js`](../public/jsproxy-src/page.js)（程序化 click / open / submit、History API 上报）、[`public/jsproxy-src/fakeloc.js`](../public/jsproxy-src/fakeloc.js)（location 写入拦截）。
+
+---
+
+## SPA 页内路由（build `20260727-v16`+）
+
+| 子页行为 | 结果 |
+|----------|------|
+| 真鼠标点 `<Link>` + `pushState` | `VC_CLICK` → 页内路由 → `VC_HISTORY` |
+| `history.pushState` / `replaceState` | 正常执行 + `VC_HISTORY` |
+| 浏览器后退/前进（popstate） | `VC_HISTORY` |
+| Hash 路由（`#/page` + `location.hash`） | ❌ hash 写入被拦截，仍不可用 |
+| 父级对每个 `VC_CLICK` 自动 `VC_NAVIGATE` | ❌ 会破坏 SPA，应改听 `VC_HISTORY` |
+
+父级收到 `VC_HISTORY` 后更新地址栏即可，**不要**再 `VC_NAVIGATE`（除非确需整页 reload）。
 
 ---
 

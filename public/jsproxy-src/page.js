@@ -225,6 +225,36 @@ export function init(win) {
   }
 
   /**
+   * @param {History} historyObj
+   * @param {string} method
+   * @param {string} [title]
+   */
+  function reportHistoryChange(historyObj, method, title) {
+    const info = env.get(historyObj)
+    if (!info) {
+      return
+    }
+    const {loc, doc} = info
+    /** @type {unknown} */
+    let state = null
+    try {
+      state = historyObj.state
+      if (state !== undefined && state !== null) {
+        JSON.stringify(state)
+      }
+    } catch {
+      state = { __vc: 'unserializable' }
+    }
+    vcReport.reportHistory({
+      ts: Date.now(),
+      method,
+      url: urlx.decUrlObj(loc),
+      title: title || (doc ? doc.title : ''),
+      state: state === undefined ? null : state,
+    })
+  }
+
+  /**
    * History API
    * @param {string} name 
    */
@@ -259,11 +289,17 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
           arguments[2] = urlx.encUrlObj(dstUrlObj)
         }
       }
-      return apply(oldFn, this, arguments)
+      const ret = apply(oldFn, this, arguments)
+      reportHistoryChange(this, name, typeof title === 'string' ? title : '')
+      return ret
     })
   }
   hookHistory('pushState')
   hookHistory('replaceState')
+
+  win.addEventListener('popstate', function () {
+    reportHistoryChange(win.history, 'popstate', win.document.title)
+  })
 
   //
   // virtual-chromo: passive navigation — report clicks, never native navigate

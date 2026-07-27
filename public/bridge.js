@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v15'
+  const BUILD = '20260727-v16'
   const PROXY_PREFIX = '/-----'
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
@@ -650,6 +650,7 @@
     window.__vcOnInjectConsole = ingestInjectConsoleEntry
     window.__vcOnInjectClick = ingestInjectClick
     window.__vcOnInjectLocation = ingestInjectLocation
+    window.__vcOnInjectHistory = ingestInjectHistory
 
     window.addEventListener('message', onParentMessage)
     window.addEventListener('message', onInjectMessage)
@@ -1001,6 +1002,34 @@
   }
 
   /**
+   * @param {unknown} payload
+   */
+  function ingestInjectHistory(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+    const data = /** @type {{ ts?: number, method?: string, url?: string, title?: string, state?: unknown }} */ (
+      payload
+    )
+    const url = typeof data.url === 'string' ? data.url : ''
+    const method = typeof data.method === 'string' ? data.method : 'unknown'
+    const title = typeof data.title === 'string' ? data.title : ''
+
+    if (url) {
+      currentContentUrl = url
+      recordHistory('spa:' + method, url, title)
+    }
+
+    postToParent('VC_HISTORY', {
+      ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+      method,
+      url,
+      title: title || undefined,
+      state: data.state === undefined ? undefined : data.state,
+    })
+  }
+
+  /**
    * @param {MessageEvent} event
    */
   function onInjectMessage(event) {
@@ -1023,6 +1052,10 @@
     }
     if (kind === 'LOCATION') {
       ingestInjectLocation(payload)
+      return
+    }
+    if (kind === 'HISTORY') {
+      ingestInjectHistory(payload)
     }
   }
 

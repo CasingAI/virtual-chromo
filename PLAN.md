@@ -67,6 +67,7 @@ flowchart TB
 - [x] `VC_LOAD_FAILED`、Console（`VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`）
 - [x] 协议文档（[docs/protocol.md](docs/protocol.md)）与父项目 Demo（[docs/parent-demo.html](docs/parent-demo.html)）
 - [x] **被动导航**（build `20260727-v15`+）：子页点击 / 改 location 只上报 `VC_CLICK` / `VC_LOCATION`，不自主换页；唯一换页入口为父级 `VC_NAVIGATE`
+- [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`
 
 ### 进行中 / 待验证
 
@@ -118,6 +119,7 @@ flowchart TB
 | 31 | `VC_CONSOLE_READ_RESULT` | RPC 响应 | — | 已有 | `建议保留` · `随#21` · `已有` |
 | 32 | `VC_LOAD_FAILED` | 事件 | 加载失败 | 已有 | `建议保留` · `已有` |
 | 33 | `VC_LOCATION` | 事件 | 子页改 location 上报 | 已有 | `建议保留` · `已有` |
+| 34 | `VC_HISTORY` | 事件 | SPA pushState / popstate | 已有 | `建议保留` · `已有` |
 
 **页面生命周期**（#15 / #17 / #16 / #32 分工，避免只靠 boolean）：
 
