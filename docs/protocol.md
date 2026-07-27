@@ -87,7 +87,7 @@ iframe.contentWindow.postMessage(['VC_EVAL', {
 | 读元素文本 | `document.querySelector('h1')?.textContent` | — |
 | 批量采集 | `[...document.querySelectorAll('a')].map(a => ({ href: a.href, text: a.textContent }))` | — |
 | 读表单状态 | `document.querySelector('#email')?.value` | — |
-| 点击 | — | `document.querySelector('#login')?.click()` |
+| 点击 | — | `document.querySelector('a')?.click()`（需 `bundle.built.js` v14+；旧 bundle 见 KNOWN-ISSUES） |
 | 填表 | — | `const el = document.querySelector('#email'); el.value = 'a@b.c'; el.dispatchEvent(new Event('input', { bubbles: true }))` |
 | 等待元素 | `new Promise(r => { const t = setInterval(() => { if (document.querySelector('.ready')) { clearInterval(t); r(true) } }, 100) })` | — |
 
@@ -199,7 +199,9 @@ VC_NAVIGATING → VC_LOADING(true) → VC_NAVIGATED → VC_LOADING(false)
 
 ### `VC_READY`
 
-Service Worker 注册完成，可接收导航命令。
+Service Worker 注册完成，bridge 可接收导航命令。
+
+**注意**：SW 更新、iframe 刷新时可能**再次**收到 `VC_READY`。父项目不应在每次 `VC_READY` 里自动 `VC_NAVIGATE`（否则会覆盖用户正在浏览的页面）。仅在首次就绪时导航，或完全由用户/业务逻辑决定首页 URL。
 
 ```javascript
 // ['VC_READY', { version: '1.3.0', build: '20260727-v2' }]
@@ -368,8 +370,8 @@ Service Worker 注册完成，可接收导航命令。
 ## 推荐接入流程
 
 1. 父页面嵌入 `<iframe src="https://your-worker.workers.dev/viewer.html">`
-2. 监听 `message`，等待 `VC_READY`
-3. 发送 `VC_NAVIGATE` 加载首页
+2. 监听 `message`，等待 `VC_READY`（标记 bridge 可接收命令）
+3. 由用户操作或业务逻辑发送 `VC_NAVIGATE`（不要在每次 `VC_READY` 里硬编码首页）
 4. 监听页面生命周期：`VC_NAVIGATING` / `VC_LOADING` / `VC_NAVIGATED` / `VC_LOAD_FAILED`
 5. 子页面内的**读信息、操作 DOM、等待逻辑**优先通过 `vcEval()`（Promise + 超时）执行
 6. Console：监听 `VC_CONSOLE_UPDATED`，用 `VC_CONSOLE_READ` + `after` UUID 增量拉取
@@ -388,6 +390,7 @@ Service Worker 注册完成，可接收导航命令。
 
 ```javascript
 const iframe = document.getElementById('chromo')
+let chromoReady = false
 
 window.addEventListener('message', (event) => {
   if (event.source !== iframe.contentWindow) return
@@ -395,10 +398,8 @@ window.addEventListener('message', (event) => {
 
   switch (cmd) {
     case 'VC_READY':
-      iframe.contentWindow.postMessage(
-        ['VC_NAVIGATE', { url: 'https://example.com' }],
-        '*'
-      )
+      chromoReady = true
+      // 导航由地址栏 / 业务决定，勿在每次 VC_READY 里强制跳转
       break
     case 'VC_NAVIGATED':
       console.log(payload.url, payload.title)
@@ -408,4 +409,9 @@ window.addEventListener('message', (event) => {
       break
   }
 })
+
+function goto(url) {
+  if (!chromoReady) return
+  iframe.contentWindow.postMessage(['VC_NAVIGATE', { url }], '*')
+}
 ```
