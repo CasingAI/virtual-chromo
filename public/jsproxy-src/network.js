@@ -4,6 +4,7 @@ import * as urlx from './urlx.js'
 import * as util from './util'
 import * as tld from './tld.js'
 import * as cdn from './cdn.js'
+import * as session from './session.js'
 import {Database} from './database.js'
 
 
@@ -38,10 +39,18 @@ export async function setDB(db) {
 
 
 /**
+ * @param {string} url
+ */
+function cacheKey(url) {
+  return `${session.getCurrentSessionId()}:${url}`
+}
+
+
+/**
  * @param {string} url 
  */
 function getUrlCache(url) {
-  return mDB.get('url-cache', url)
+  return mDB.get('url-cache', cacheKey(url))
 }
 
 
@@ -52,7 +61,15 @@ function getUrlCache(url) {
  * @param {number} expires 
  */
 async function setUrlCache(url, host, info, expires) {
-  await mDB.put('url-cache', {url, host, info, expires})
+  const key = cacheKey(url)
+  await mDB.put('url-cache', {
+    url: key,
+    sessionId: session.getCurrentSessionId(),
+    targetUrl: url,
+    host,
+    info,
+    expires,
+  })
 }
 
 
@@ -60,7 +77,25 @@ async function setUrlCache(url, host, info, expires) {
  * @param {string} url 
  */
 async function delUrlCache(url) {
-  await mDB.delete('url-cache', url)
+  await mDB.delete('url-cache', cacheKey(url))
+}
+
+
+/**
+ * @param {string} sessionId
+ */
+export async function destroySessionCache(sessionId) {
+  if (!mDB) {
+    return
+  }
+  await mDB.enum('url-cache', rec => {
+    const sid = rec.sessionId ||
+      (typeof rec.url === 'string' ? rec.url.split(':')[0] : '')
+    if (sid === sessionId) {
+      mDB.delete('url-cache', rec.url)
+    }
+    return true
+  })
 }
 
 

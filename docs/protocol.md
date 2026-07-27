@@ -11,6 +11,36 @@ virtual-chromo 作为 iframe 嵌入外层「浏览器壳」项目，双方通过
 - 生产环境建议双方使用明确 origin，避免 `*`。
 - **父项目必须与 Worker 不同源**。若父页面与 Worker 在同一域名下，Service Worker 会接管整个站点，导致父页面本身也被代理。
 
+## Session（BrowserContext）
+
+每个 **session** 对应 Playwright 的 `BrowserContext`：独立 cookie / storage，同一 session 内多 tab **共享**登录态；关 tab **不**清状态，仅 `VC_SESSION_DESTROY` 清空。
+
+### URL 约定
+
+- Viewer：`https://<worker>/s/<sessionId>/`
+- 代理页：`https://<worker>/s/<sessionId>/-----https://example.com/`
+- 无 `/s/` 前缀的 legacy 入口归入 `default` session（deprecated）
+
+### 父 → iframe
+
+| 命令 | payload | 说明 |
+|------|---------|------|
+| `VC_SESSION_CREATE` | `{ sessionId? }` | 可选指定 id；否则生成 UUID。iframe 导航到 `/s/<id>/`，并上报 `VC_SESSION_CREATED` |
+| `VC_SESSION_DESTROY` | `{ sessionId? }` | 默认销毁当前 iframe session；清空 SW 内该 session 全部状态 |
+| `VC_SESSION_LIST` | — | 调试：SW 返回活跃 session 列表（`VC_SESSION_LIST_RESULT`） |
+
+### iframe → 父
+
+| 事件 | payload |
+|------|---------|
+| `VC_READY` | `{ version, build, sessionId }` |
+| `VC_SESSION_CREATED` | `{ sessionId }` |
+| `VC_SESSION_DESTROYED` | `{ sessionId }` |
+| `VC_SESSION_GONE` | `{ sessionId }` — SW 销毁或 idle GC 后通知 |
+| `VC_SESSION_LIST_RESULT` | `{ sessions: [{ sessionId, clientCount, lastTouch }] }` |
+
+`VC_NAVIGATE` 等现有命令不变；session 由 iframe URL 决定，导航路径自动带 `/s/<sessionId>/-----`。
+
 ## 父 → iframe（命令）
 
 ### `VC_NAVIGATE`
@@ -204,7 +234,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 **注意**：SW 更新、iframe 刷新时可能**再次**收到 `VC_READY`。父项目不应在每次 `VC_READY` 里自动 `VC_NAVIGATE`（否则会覆盖用户正在浏览的页面）。仅在首次就绪时导航，或完全由用户/业务逻辑决定首页 URL。
 
 ```javascript
-// ['VC_READY', { version: '1.3.0', build: '20260727-v2' }]
+// ['VC_READY', { version: '1.3.0', build: '20260727-v17', sessionId: '…' }]
 ```
 
 ### `VC_NAVIGATING`

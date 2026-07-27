@@ -7,6 +7,13 @@ export const SW_COOKIE_PUSH = 4
 export const PAGE_INIT_BEG = 5
 export const PAGE_INIT_END = 6
 
+export const PAGE_STORAGE_GET = 7
+export const PAGE_STORAGE_SET = 8
+export const PAGE_STORAGE_REMOVE = 9
+export const PAGE_STORAGE_CLEAR = 10
+export const SW_STORAGE_PUSH = 11
+export const SW_STORAGE_REPLY = 12
+
 export const PAGE_CONF_SET = 110
 export const PAGE_CONF_GET = 111
 export const PAGE_RELOAD_CONF = 112
@@ -16,3 +23,8 @@ export const SW_CONF_CHANGE = 113
 
 export const PAGE_READY_CHECK = 200
 export const SW_READY = 201
+
+export const SW_SESSION_DESTROY = 300
+export const PAGE_BRIDGE_SESSION_DESTROY = 302
+export const PAGE_SESSION_LIST = 303
+export const SW_SESSION_LIST = 304

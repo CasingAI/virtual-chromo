@@ -5,6 +5,28 @@
 
 ---
 
+## Session 隔离（BrowserContext，build `20260727-v17`+）
+
+### 语义
+
+- **sessionId** = Playwright `BrowserContext`：cookie / localStorage / IndexedDB / Cache 按 session 隔离
+- **同一 session 多 tab**：共享登录态；cookie 与 localStorage 跨 tab 同步（`StorageEvent`）
+- **关 tab**：状态保留；仅 `VC_SESSION_DESTROY` 或 idle GC（无 client 超过 1h）清空
+- **URL**：`/s/<sessionId>/` 与 `/s/<sessionId>/-----https://…`
+
+### 实现要点
+
+- 源码：[`public/jsproxy-src/session.js`](../public/jsproxy-src/session.js)、[`cookie.js`](../public/jsproxy-src/cookie.js)、[`storage.js`](../public/jsproxy-src/storage.js)
+- 父项目开 tab：每个 iframe `src="https://worker/s/<uuid>/"`，或发 `VC_SESSION_CREATE`
+- **不要**依赖多 Worker 部署做隔离
+
+### 已知限制
+
+- 站点 **IndexedDB 跨 tab 实时一致**与 Chrome 仍有差距（仅库名按 session 前缀隔离）
+- legacy 根路径 `/` 使用 `default` session，与 `/s/…` 不互通
+
+---
+
 ## inject.js 未加载
 
 ### 现象

@@ -25,6 +25,8 @@
 
 ## virtual-chromo 定制
 
+**Session / BrowserContext**（build `20260727-v17`+）：[`session.js`](session.js)、[`session-storage.js`](session-storage.js)；URL 前缀 `/s/<sessionId>/`；cookie / storage 按 session 隔离。
+
 `index.vc.js` 相对上游 `index.js` 的改动（为双层 iframe 外壳）：
 
 - **Shell 页检测**：不限于 `win === top`；viewer 外壳 iframe 也可初始化 jsproxy

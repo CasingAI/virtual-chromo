@@ -7,8 +7,11 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v16'
+  const BUILD = '20260727-v17'
   const PROXY_PREFIX = '/-----'
+  const MSG_BRIDGE_DESTROY = 302
+  const MSG_SESSION_LIST = 303
+  const MSG_SW_SESSION_LIST = 304
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -550,6 +553,84 @@
   // Bridge
   // ---------------------------------------------------------------------------
 
+  /** @type {string} */
+  let sessionId = parseSessionIdFromLocation()
+
+  /**
+   * @returns {string}
+   */
+  function parseSessionIdFromLocation() {
+    const m = location.pathname.match(/^\/s\/([^/]+)/)
+    return m ? m[1] : 'default'
+  }
+
+  /**
+   * @param {string} id
+   */
+  function destroySessionViaSw(id) {
+    const sid = id || sessionId
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (ctl) {
+        ctl.postMessage([MSG_BRIDGE_DESTROY, { sessionId: sid }])
+      }
+    })
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function createSession(payload) {
+    const req = payload && typeof payload === 'object' ? payload : {}
+    let id = typeof req.sessionId === 'string' && req.sessionId.trim()
+      ? req.sessionId.trim()
+      : null
+    if (!id) {
+      id = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : 's' + Date.now().toString(36)
+    }
+    if (!/^[\w-]{1,128}$/.test(id)) {
+      emitError('invalid sessionId', 'SESSION_BAD_ID')
+      return
+    }
+    postToParent('VC_SESSION_CREATED', { sessionId: id })
+    if (id !== sessionId) {
+      location.href = '/s/' + encodeURIComponent(id) + '/'
+    }
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function destroySession(payload) {
+    const req = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof req.sessionId === 'string' && req.sessionId
+      ? req.sessionId
+      : sessionId
+    destroySessionViaSw(id)
+    postToParent('VC_SESSION_DESTROYED', { sessionId: id })
+  }
+
+  function listSessions() {
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        postToParent('VC_SESSION_LIST_RESULT', { sessions: [{ sessionId, clientCount: 1 }] })
+        return
+      }
+      function onList(event) {
+        if (!Array.isArray(event.data) || event.data[0] !== MSG_SW_SESSION_LIST) {
+          return
+        }
+        navigator.serviceWorker.removeEventListener('message', onList)
+        postToParent('VC_SESSION_LIST_RESULT', { sessions: event.data[1] })
+      }
+      navigator.serviceWorker.addEventListener('message', onList)
+      ctl.postMessage([MSG_SESSION_LIST])
+    })
+  }
+
   /** @type {string[]|null} */
   let allowedOrigins = null
 
@@ -622,6 +703,7 @@
     return {
       version: VERSION,
       build: BUILD,
+      sessionId,
       swReady,
       loading,
       contentUrl: state.url || currentContentUrl || '',
@@ -654,6 +736,7 @@
 
     window.addEventListener('message', onParentMessage)
     window.addEventListener('message', onInjectMessage)
+    navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage)
     contentFrame.addEventListener('load', onContentLoad)
     contentFrame.addEventListener('error', onContentError)
 
@@ -669,6 +752,21 @@
     swReady = true
     vlog('info', ['service worker ready'])
     emitReady()
+  }
+
+  const MSG_SW_SESSION_DESTROY = 300
+
+  /**
+   * @param {MessageEvent} event
+   */
+  function onServiceWorkerMessage(event) {
+    if (!Array.isArray(event.data)) {
+      return
+    }
+    const [cmd, payload] = event.data
+    if (cmd === MSG_SW_SESSION_DESTROY && payload && payload.sessionId) {
+      postToParent('VC_SESSION_GONE', { sessionId: payload.sessionId })
+    }
   }
 
   /**
@@ -710,6 +808,15 @@
         break
       case 'VC_CONSOLE_READ':
         readConsoleHistory(payload)
+        break
+      case 'VC_SESSION_CREATE':
+        createSession(payload)
+        break
+      case 'VC_SESSION_DESTROY':
+        destroySession(payload)
+        break
+      case 'VC_SESSION_LIST':
+        listSessions()
         break
       default:
         break
@@ -1342,7 +1449,11 @@
    * @param {string} url
    */
   function toProxyPath(url) {
-    return PROXY_PREFIX + url.replace(/^https?:\/\//i, 'https://')
+    const normalized = url.replace(/^https?:\/\//i, 'https://')
+    if (sessionId === 'default') {
+      return PROXY_PREFIX + normalized
+    }
+    return '/s/' + encodeURIComponent(sessionId) + PROXY_PREFIX + normalized
   }
 
   /**
@@ -1352,7 +1463,9 @@
     if (!path || path === '/' || path === '/viewer.html' || path === '/viewer') {
       return ''
     }
-    const stripped = path.replace(/^\/-+/, '')
+    const sessionMatch = path.match(/^\/s\/[^/]+(\/+.*)$/)
+    const rest = sessionMatch ? sessionMatch[1] : path
+    const stripped = rest.replace(/^\/-+/, '')
     if (!stripped) {
       return ''
     }
@@ -1383,8 +1496,8 @@
   }
 
   function emitReady() {
-    postToParent('VC_READY', { version: VERSION, build: BUILD })
-    vlog('info', ['virtual-chromo bridge v' + VERSION + ' (build ' + BUILD + ')'])
+    postToParent('VC_READY', { version: VERSION, build: BUILD, sessionId })
+    vlog('info', ['virtual-chromo bridge v' + VERSION + ' (build ' + BUILD + ', session ' + sessionId + ')'])
   }
 
   /**

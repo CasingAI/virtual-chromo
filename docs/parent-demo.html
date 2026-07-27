@@ -114,6 +114,9 @@
     <button id="btnEval" type="button" title="在子页面执行 document.title">Eval</button>
     <button id="btnLog" type="button" title="在子页面 console.log">Log</button>
     <button id="btnAlert" type="button" title="在子页面 alert（应被 noop）">Alert</button>
+    <button id="btnNewSession" type="button" title="VC_SESSION_CREATE">新 Session</button>
+    <button id="btnSameSessionTab" type="button" title="同 session 开第二个 iframe">同 Session Tab</button>
+    <button id="btnDestroySession" type="button" title="VC_SESSION_DESTROY">销毁 Session</button>
   </div>
   <div id="status">等待 virtual-chromo 就绪…</div>
   <div id="main">
@@ -122,6 +125,12 @@
         id="chromo"
         src="http://localhost:8787/"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+      ></iframe>
+      <iframe
+        id="chromo2"
+        hidden
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+        style="width:100%;height:50%;border-top:1px solid #0f3460"
       ></iframe>
     </div>
     <aside id="consolePanel">
@@ -145,10 +154,16 @@
       const btnEval = document.getElementById('btnEval')
       const btnLog = document.getElementById('btnLog')
       const btnAlert = document.getElementById('btnAlert')
+      const btnNewSession = document.getElementById('btnNewSession')
+      const btnSameSessionTab = document.getElementById('btnSameSessionTab')
+      const btnDestroySession = document.getElementById('btnDestroySession')
+      const iframe2 = document.getElementById('chromo2')
+      const workerOrigin = new URL(iframe.src).origin
 
       let ready = false
       let currentUrl = ''
       let lastConsoleId = ''
+      let sessionId = 'default'
       const DEFAULT_RPC_TIMEOUT = 30000
 
       function post(cmd, payload) {
@@ -273,13 +288,26 @@
         switch (cmd) {
           case 'VC_READY':
             ready = true
+            sessionId = (payload && payload.sessionId) || sessionId
             setStatus(
               '已就绪 v' +
                 (payload && payload.version || '?') +
                 ' build ' +
                 (payload && payload.build || '?') +
+                ' session ' +
+                sessionId +
                 ' — 输入 URL 后按 Enter 或点「前往」',
             )
+            break
+          case 'VC_SESSION_CREATED':
+            if (payload && payload.sessionId) {
+              sessionId = payload.sessionId
+              setStatus('Session 已创建: ' + sessionId)
+            }
+            break
+          case 'VC_SESSION_DESTROYED':
+          case 'VC_SESSION_GONE':
+            setStatus('Session 已销毁: ' + (payload && payload.sessionId || sessionId))
             break
           case 'VC_NAVIGATING':
             setStatus('即将加载 ' + (payload && payload.url || ''))
@@ -395,6 +423,21 @@
           .catch(function (err) {
             setStatus('alert 失败: ' + err.message)
           })
+      })
+      btnNewSession.addEventListener('click', function () {
+        post('VC_SESSION_CREATE', {})
+      })
+      btnSameSessionTab.addEventListener('click', function () {
+        if (sessionId === 'default') {
+          setStatus('请先创建带 /s/ 前缀的 session')
+          return
+        }
+        iframe2.hidden = false
+        iframe2.src = workerOrigin + '/s/' + encodeURIComponent(sessionId) + '/'
+        setStatus('已打开同 session 第二 tab: ' + sessionId)
+      })
+      btnDestroySession.addEventListener('click', function () {
+        post('VC_SESSION_DESTROY', { sessionId: sessionId })
       })
     })()
   </script>

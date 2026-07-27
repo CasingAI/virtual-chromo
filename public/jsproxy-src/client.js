@@ -3,7 +3,8 @@ import * as route from './route.js'
 import * as env from './env.js'
 import * as hook from './hook.js'
 import {createFakeLoc} from './fakeloc.js'
-import {createStorage} from './storage.js'
+import {createStorage, setStorageMessenger, handleStoragePush, clearSessionStorage} from './storage.js'
+import * as session from './session.js'
 
 
 const {
@@ -17,12 +18,11 @@ const {
  * 
  * @param {Window} global WindowOrWorkerGlobalScope
  * @param {string} origin 
+ * @param {string=} sessionId
  */
-export function init(global, origin) {
-  // lockNative(win)
-
-  // hook Storage API
-  createStorage(global, origin)
+export function init(global, origin, sessionId) {
+  const sid = sessionId || session.getCurrentSessionId()
+  createStorage(global, origin, sid)
 
   // hook Location API
   const fakeLoc = createFakeLoc(global)

@@ -1,11 +1,10 @@
 import {Database} from './database.js'
-
-/** @type {Set<Cookie>} */
-let mDirtySet = new Set()
+import * as session from './session.js'
 
 
 function Cookie() {
   this.id = ''
+  this.sessionId = ''
   this.name = ''
   this.value = ''
   this.domain = ''
@@ -24,6 +23,7 @@ function Cookie() {
  */
 function copy(dst, src) {
   dst.id = src.id
+  dst.sessionId = src.sessionId
   dst.name = src.name
   dst.value = src.value
   dst.domain = src.domain
@@ -81,25 +81,16 @@ class CookieDomainNode {
     this.children = {}
   }
 
-  /**
-   * @param {string} name 
-   */
   nextChild(name) {
     return this.children[name] || (
       this.children[name] = new CookieDomainNode
     )
   }
 
-  /**
-   * @param {string} name 
-   */
   getChild(name) {
     return this.children[name]
   }
 
-  /**
-   * @param {Cookie} cookie 
-   */
   addCookie(cookie) {
     if (this.items) {
       this.items.push(cookie)
@@ -109,21 +100,168 @@ class CookieDomainNode {
   }
 }
 
-/** @type {Map<string, Cookie>} */
-const mIdCookieMap = new Map()
 
-const mCookieNodeRoot = new CookieDomainNode()
+class CookieJar {
+  /**
+   * @param {string} sessionId
+   */
+  constructor(sessionId) {
+    this.sessionId = sessionId
+    /** @type {Map<string, Cookie>} */
+    this.mIdCookieMap = new Map()
+    this.mCookieNodeRoot = new CookieDomainNode()
+    /** @type {Set<Cookie>} */
+    this.mDirtySet = new Set()
+  }
 
+  /**
+   * @param {Cookie} item
+   */
+  set(item) {
+    item.sessionId = this.sessionId
+    const baseId = (item.secure ? ';' : '') +
+      item.name + ';' +
+      item.domain +
+      item.path
+    item.id = `${this.sessionId}$${baseId}`
 
+    const matched = this.mIdCookieMap.get(item.id)
 
-export function getNonHttpOnlyItems() {
-  const ret = []
-  for (const item of mIdCookieMap.values()) {
-    if (!item.httpOnly) {
-      ret.push(item)
+    if (matched) {
+      if (item.isExpired) {
+        this.mIdCookieMap.delete(item.id)
+        matched.isExpired = true
+      } else {
+        copy(matched, item)
+      }
+      this.mDirtySet.add(matched)
+    } else if (!item.isExpired) {
+      const labels = item.domain.split('.')
+      let labelPos = labels.length
+      let node = this.mCookieNodeRoot
+      do {
+        node = node.nextChild(labels[--labelPos])
+      } while (labelPos !== 0)
+
+      node.addCookie(item)
+      this.mIdCookieMap.set(item.id, item)
+      this.mDirtySet.add(item)
     }
   }
-  return ret
+
+  /**
+   * @param {URL} urlObj 
+   */
+  query(urlObj) {
+    const ret = []
+    const now = Date.now()
+    const domain = urlObj.hostname
+    const path = urlObj.pathname
+    const isHttps = (urlObj.protocol === 'https:')
+
+    const labels = domain.split('.')
+    let labelPos = labels.length
+    let node = this.mCookieNodeRoot
+
+    do {
+      node = node.getChild(labels[--labelPos])
+      if (!node) {
+        break
+      }
+      const items = node.items
+      if (!items) {
+        continue
+      }
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (!isHttps && item.secure) {
+          continue
+        }
+        if (item.hostOnly && labelPos !== 0) {
+          continue
+        }
+        if (!isSubPath(item.path, path)) {
+          continue
+        }
+        if (item.isExpired) {
+          continue
+        }
+        if (isExpire(item, now)) {
+          item.isExpired = true
+          continue
+        }
+
+        let str = item.value
+        if (item.name) {
+          str = item.name + '=' + str
+        }
+        ret.push(str)
+      }
+    } while (labelPos !== 0)
+
+    return ret.join('; ')
+  }
+
+  getNonHttpOnlyItems() {
+    const ret = []
+    for (const item of this.mIdCookieMap.values()) {
+      if (!item.httpOnly) {
+        ret.push(item)
+      }
+    }
+    return ret
+  }
+
+  /**
+   * @param {Database} db
+   */
+  async save(db) {
+    if (this.mDirtySet.size === 0) {
+      return
+    }
+
+    const tmp = this.mDirtySet
+    this.mDirtySet = new Set()
+
+    for (const item of tmp) {
+      if (item.isExpired) {
+        await db.delete('cookie', item.id)
+      } else if (!isNaN(item.expires)) {
+        await db.put('cookie', item)
+      }
+    }
+  }
+
+  clearMemory() {
+    this.mIdCookieMap.clear()
+    this.mCookieNodeRoot = new CookieDomainNode()
+    this.mDirtySet.clear()
+  }
+}
+
+
+/** @type {Map<string, CookieJar>} */
+const mJars = new Map()
+
+/** @type {Database} */
+let mDB
+
+/**
+ * @param {string} sessionId
+ */
+function getJar(sessionId) {
+  const sid = sessionId || session.getCurrentSessionId()
+  let jar = mJars.get(sid)
+  if (!jar) {
+    jar = new CookieJar(sid)
+    mJars.set(sid, jar)
+  }
+  return jar
+}
+
+
+export function getNonHttpOnlyItems(sessionId) {
+  return getJar(sessionId).getNonHttpOnlyItems()
 }
 
 
@@ -145,12 +283,6 @@ export function parse(str, urlObj, now) {
       key = s.substr(0, p)
       val = s.substr(p + 1)
     } else {
-      //
-      // cookie = 's; secure; httponly'
-      //  0: { key: '', val: 's' }
-      //  1: { key: 'secure', val: '' }
-      //  2: { key: 'httponly', val: '' }
-      //
       key = (i === 0) ? '' : s
       val = (i === 0) ? s : ''
     }
@@ -195,32 +327,22 @@ export function parse(str, urlObj, now) {
     item.isExpired = true
   }
 
-  // https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/Set-Cookie
   if (item.name.startsWith('__Secure-')) {
-    if (!(
-      urlObj.protocol === 'https:' &&
-      item.secure
-    )) {
+    if (!(urlObj.protocol === 'https:' && item.secure)) {
       return
     }
   }
   if (item.name.startsWith('__Host-')) {
-    if (!(
-      urlObj.protocol === 'https:' &&
-      item.secure &&
-      item.domain === '' &&
-      item.path === '/'
-    )) {
+    if (!(urlObj.protocol === 'https:' && item.secure &&
+        item.domain === '' && item.path === '/')) {
       return
     }
   }
 
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie#Compatibility_notes
   if (item.secure && urlObj.protocol === 'http:') {
     return
   }
 
-  // check hostname
   const domain = urlObj.hostname
 
   if (item.domain) {
@@ -234,7 +356,6 @@ export function parse(str, urlObj, now) {
     item.hostOnly = true
   }
 
-  // check pathname
   const path = urlObj.pathname
 
   if (item.path) {
@@ -247,114 +368,27 @@ export function parse(str, urlObj, now) {
     item.path = path
   }
 
-  item.id = (item.secure ? ';' : '') +
-    item.name + ';' +
-    item.domain +
-    item.path
-
   return item
 }
 
 
 /**
  * @param {Cookie} item
+ * @param {string=} sessionId
  */
-export function set(item) {
-  // console.log('set:', item)
-  const id = item.id
-  const matched = mIdCookieMap.get(id)
-
-  if (matched) {
-    if (item.isExpired) {
-      // delete
-      mIdCookieMap.delete(id)
-      matched.isExpired = true
-      // TODO: remove node
-    } else {
-      // update
-      copy(matched, item)
-    }
-    mDirtySet.add(matched)
-  } else {
-    // create
-    const labels = item.domain.split('.')
-    let labelPos = labels.length
-    let node = mCookieNodeRoot
-    do {
-      node = node.nextChild(labels[--labelPos])
-    } while (labelPos !== 0)
-  
-    node.addCookie(item)
-    mIdCookieMap.set(id, item)
-
-    mDirtySet.add(item)
-  }
+export function set(item, sessionId) {
+  getJar(sessionId).set(item)
 }
 
 
 /**
- * @param {URL} urlObj 
+ * @param {URL} urlObj
+ * @param {string=} sessionId
  */
-export function query(urlObj) {
-  const ret = []
-  const now = Date.now()
-  const domain = urlObj.hostname
-  const path = urlObj.pathname
-  const isHttps = (urlObj.protocol === 'https:')
-
-  const labels = domain.split('.')
-  let labelPos = labels.length
-  let node = mCookieNodeRoot
-
-  do {
-    node = node.getChild(labels[--labelPos])
-    if (!node) {
-      break
-    }
-    const items = node.items
-    if (!items) {
-      continue
-    }
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      // https url | secure flag | carry
-      //   ✔       |   ✔         |   ✔
-      //   ✔       |   ✘         |   ✔
-      //   ✘       |   ✘         |   ✔
-      //   ✘       |   ✔         |   ✘
-      if (!isHttps && item.secure) {
-        continue
-      }
-      // HostOnly Cookie 需匹配完整域名
-      if (item.hostOnly && labelPos !== 0) {
-        continue
-      }
-      if (!isSubPath(item.path, path)) {
-        continue
-      }
-      if (item.isExpired) {
-        continue
-      }
-      if (isExpire(item, now)) {
-        item.isExpired = true
-        continue
-      }
-      // TODO: same site
-
-      let str = item.value
-      if (item.name) {
-        str = item.name + '=' + str
-      }
-      ret.push(str)
-    }
-  } while (labelPos !== 0)
-
-  return ret.join('; ')
+export function query(urlObj, sessionId) {
+  return getJar(sessionId).query(urlObj)
 }
 
-
-/** @type {Database} */
-let mDB
 
 export async function setDB(db) {
   mDB = db
@@ -363,30 +397,51 @@ export async function setDB(db) {
   await mDB.enum('cookie', v => {
     if (isExpire(v, now)) {
       mDB.delete('cookie', v.id)
-    } else {
-      set(v)
+      return true
     }
+    const sid = v.sessionId ||
+      (typeof v.id === 'string' && v.id.includes('$')
+        ? v.id.split('$')[0]
+        : session.DEFAULT_SESSION)
+    getJar(sid).set(v)
     return true
   })
 
-  setInterval(save, 1000 * 3)
+  setInterval(saveAll, 1000 * 3)
 }
 
 
-export async function save() {
-  if (mDirtySet.size === 0) {
+async function saveAll() {
+  if (!mDB) {
     return
   }
+  for (const jar of mJars.values()) {
+    await jar.save(mDB)
+  }
+}
 
-  const tmp = mDirtySet
-  mDirtySet = new Set()
 
-  for (const item of tmp) {
-    if (item.isExpired) {
-      await mDB.delete('cookie', item.id)
-    } else if (!isNaN(item.expires)) {
-      // 不保存 session cookie
-      await mDB.put('cookie', item)
+/**
+ * @param {string} sessionId
+ */
+export async function destroySession(sessionId) {
+  const jar = mJars.get(sessionId)
+  if (jar) {
+    if (mDB) {
+      for (const item of jar.mIdCookieMap.values()) {
+        await mDB.delete('cookie', item.id)
+      }
     }
+    jar.clearMemory()
+    mJars.delete(sessionId)
+  } else if (mDB) {
+    await mDB.enum('cookie', v => {
+      const sid = v.sessionId ||
+        (typeof v.id === 'string' ? v.id.split('$')[0] : '')
+      if (sid === sessionId) {
+        mDB.delete('cookie', v.id)
+      }
+      return true
+    })
   }
 }

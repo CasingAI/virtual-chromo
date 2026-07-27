@@ -1,5 +1,5 @@
 
-export const ROOT = getRootPath() 
+export const ROOT = getRootPath()
 export const HOME = ROOT + 'index.html'
 export const CONF = ROOT + 'conf.js'
 export const ICON = ROOT + 'favicon.ico'
@@ -12,6 +12,7 @@ function getRootPath() {
   //
   // 如果运行在代理页面，当前路径：
   //   https://example.com/path/to/-----url
+  //   https://example.com/s/{sessionId}/-----url
   // 如果运行在 SW，当前路径：
   //   https://example.com/path/to/sw.js
   // 如果运行在 Worker，当前路径：
@@ -25,12 +26,21 @@ function getRootPath() {
     return envPath
   }
   let url = location.href
+
+  const proxyPos = url.indexOf('/-----http')
+  if (proxyPos !== -1) {
+    return url.substr(0, proxyPos).replace(/\/*$/, '/')
+  }
+
+  const sessionShell = url.match(/^(https?:\/\/[^/?#]+(\/s\/[^/?#]+))\/?([?#]|$)/)
+  if (sessionShell) {
+    return sessionShell[1] + '/'
+  }
+
   const pos = url.indexOf('/-----http')
   if (pos === -1) {
-    // sw
     url = url.replace(/[^/]+$/, '')
   } else {
-    // page
     url = url.substr(0, pos)
   }
   return url.replace(/\/*$/, '/')

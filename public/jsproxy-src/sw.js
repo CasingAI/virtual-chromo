@@ -7,6 +7,8 @@ import * as network from './network.js'
 import * as MSG from './msg.js'
 import * as jsfilter from './jsfilter.js'
 import * as inject from './inject.js'
+import * as session from './session.js'
+import * as sessionStorage from './session-storage.js'
 import {Signal} from './signal.js'
 import {Database} from './database.js'
 
@@ -148,16 +150,21 @@ function processJs(buf, charset) {
  * @param {*} cmd 
  * @param {*} msg 
  * @param {string=} srcId
+ * @param {string=} sessionId
  */
-async function sendMsgToPages(cmd, msg, srcId) {
-  // 通知页面更新 Cookie
+async function sendMsgToPages(cmd, msg, srcId, sessionId) {
   const pages = await clients.matchAll({type: 'window'})
+  const sid = sessionId || session.getCurrentSessionId()
 
   for (const page of pages) {
     if (page.frameType !== 'top-level') {
       continue
     }
     if (srcId && page.id === srcId) {
+      continue
+    }
+    const pageSession = session.parseSessionFromUrl(page.url).sessionId
+    if (pageSession !== sid) {
       continue
     }
     sendMsg(page, cmd, msg)
@@ -255,7 +262,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
   } = r
 
   if (cookies) {
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies)
+    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, session.getCurrentSessionId())
   }
 
   if (!status) {
@@ -393,11 +400,23 @@ async function initDB() {
     },
     'cookie': {
       keyPath: 'id'
+    },
+    'web-storage': {
+      keyPath: 'id'
     }
   })
 
   await network.setDB(mDB)
   await cookie.setDB(mDB)
+  await sessionStorage.setDB(mDB)
+
+  session.setDestroyHandler(async sessionId => {
+    await cookie.destroySession(sessionId)
+    await sessionStorage.destroySession(sessionId)
+    await network.destroySessionCache(sessionId)
+    sendMsgToPages(MSG.SW_SESSION_DESTROY, { sessionId }, undefined, sessionId)
+  })
+  session.startIdleGc()
 }
 
 
@@ -514,37 +533,53 @@ async function onFetch(e) {
   if (!mConf) {
     await initConf()
   }
-  // TODO: 逻辑优化
   if (!mDB) {
     await initDB()
   }
   const req = e.request
   const urlStr = urlx.delHash(req.url)
+  const parsed = session.parseSessionFromUrl(urlStr)
+  session.setCurrentSessionId(parsed.sessionId)
+  session.touchSession(parsed.sessionId, e.clientId)
 
-  // 首页（例如 https://zjcqoo.github.io/）
-  if (urlStr === path.ROOT || urlStr === path.HOME) {
+  const origin = parsed.origin || new URL(urlStr).origin
+  const sessionRoot = session.buildSessionUrl(origin, parsed.sessionId, '')
+  const sessionHome = sessionRoot + 'index.html'
+
+  if (
+    session.isViewerHomePath(parsed.restPath) ||
+    urlStr === sessionRoot.replace(/\/$/, '') ||
+    urlStr === sessionHome ||
+    (parsed.sessionId === session.DEFAULT_SESSION && session.isLegacyRootPath(parsed.restPath))
+  ) {
     let indexPath = mConf.assets_cdn + mConf.index_path
     if (!mConf.index_path) {
-      // 临时代码。防止配置文件未更新的情况下首页无法加载
       indexPath = mConf.assets_cdn + 'index_v3.html'
     }
     const res = await fetch(indexPath)
     return makeHtmlRes(res.body)
   }
 
-  // 图标、配置（例如 https://zjcqoo.github.io/conf.js）
-  if (urlStr === path.CONF || urlStr === path.ICON) {
-    return fetch(urlStr)
+  const legacyConf = origin + '/conf.js'
+  const legacyIcon = origin + '/favicon.ico'
+  if (
+    urlStr === legacyConf ||
+    urlStr === legacyIcon ||
+    urlStr.endsWith('/conf.js') && parsed.restPath === '/conf.js' ||
+    urlStr.endsWith('/favicon.ico') && parsed.restPath === '/favicon.ico'
+  ) {
+    return fetch(origin + parsed.restPath)
   }
 
-  // 注入页面的脚本（例如 https://zjcqoo.github.io/__sys__/helper.js）
-  if (urlStr === path.HELPER) {
+  if (parsed.restPath === path.HELPER.replace(path.ROOT, '/') ||
+      urlStr.endsWith('__sys__/helper.js')) {
     return fetch(self['__FILE__'])
   }
 
-  // 静态资源（例如 https://zjcqoo.github.io/__sys__/assets/ico/google.png）
-  if (urlStr.startsWith(path.ASSETS)) {
-    const filePath = urlStr.substr(path.ASSETS.length)
+  const assetsSuffix = '__sys__/assets/'
+  const assetsIdx = parsed.restPath.indexOf(assetsSuffix)
+  if (assetsIdx !== -1) {
+    const filePath = parsed.restPath.substr(assetsIdx + assetsSuffix.length)
     return fetch(mConf.assets_cdn + filePath)
   }
 
@@ -579,7 +614,8 @@ async function onFetch(e) {
     } = handler
 
     if (redir) {
-      return Response.redirect('/-----' + redir)
+      const redirPrefix = session.getProxyPrefix(origin, parsed.sessionId)
+      return Response.redirect(redirPrefix + redir)
     }
     if (content) {
       return makeHtmlRes(content)
@@ -700,32 +736,73 @@ global.addEventListener('fetch', e => {
 
 
 global.addEventListener('message', e => {
-  // console.log('sw msg:', e.data)
   const [cmd, val] = e.data
   const src = e.source
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  session.setCurrentSessionId(srcSession)
+  session.touchSession(srcSession, src && src.id)
 
   switch (cmd) {
   case MSG.PAGE_COOKIE_PUSH:
-    cookie.set(val)
-    // @ts-ignore
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, [val], src.id)
+    cookie.set(val, srcSession)
+    sendMsgToPages(MSG.SW_COOKIE_PUSH, [val], src.id, srcSession)
     break
 
   case MSG.PAGE_INFO_PULL:
-    // console.log('SW MSG.COOKIE_PULL:', src.id)
     sendMsg(src, MSG.SW_INFO_PUSH, {
-      cookies: cookie.getNonHttpOnlyItems(),
+      cookies: cookie.getNonHttpOnlyItems(srcSession),
       conf: mConf,
+      sessionId: srcSession,
     })
     break
 
+  case MSG.PAGE_STORAGE_GET:
+    break
+
+  case MSG.PAGE_STORAGE_SET: {
+    const { siteOrigin, key, value, oldValue } = val
+    sessionStorage.setItem(srcSession, siteOrigin, key, value).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, key, value, oldValue,
+      }, src.id, srcSession)
+    })
+    break
+  }
+
+  case MSG.PAGE_STORAGE_REMOVE: {
+    const { siteOrigin, key, oldValue } = val
+    sessionStorage.removeItem(srcSession, siteOrigin, key).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, key, value: null, oldValue,
+      }, src.id, srcSession)
+    })
+    break
+  }
+
+  case MSG.PAGE_STORAGE_CLEAR: {
+    const { siteOrigin } = val
+    sessionStorage.clear(srcSession, siteOrigin).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, clear: true,
+      }, src.id, srcSession)
+    })
+    break
+  }
+
+  case MSG.PAGE_BRIDGE_SESSION_DESTROY:
+    session.destroySession(val.sessionId)
+    break
+
+  case MSG.PAGE_SESSION_LIST:
+    sendMsg(src, MSG.SW_SESSION_LIST, session.listSessions())
+    break
+
   case MSG.PAGE_INIT_BEG:
-    // console.log('SW MSG.PAGE_INIT_BEG:', val)
     pageNotify(val, false)
     break
 
   case MSG.PAGE_INIT_END:
-    // console.log('SW MSG.PAGE_INIT_END:', val)
     pageNotify(val, true)
     break
 
@@ -745,12 +822,12 @@ global.addEventListener('message', e => {
     break
 
   case MSG.PAGE_RELOAD_CONF:
-    /*await*/ loadConf()
+    loadConf()
     break
 
   case MSG.PAGE_READY_CHECK:
     sendMsg(src, MSG.SW_READY)
-    /*await*/ loadConf()
+    loadConf()
     break
   }
 })

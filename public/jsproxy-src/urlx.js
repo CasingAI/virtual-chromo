@@ -1,12 +1,14 @@
 import * as util from './util.js'
 import * as env from './env.js'
 import * as path from './path.js'
+import * as session from './session.js'
 import * as tld from './tld.js'
 
 
 const PREFIX = path.PREFIX
 const PREFIX_LEN = PREFIX.length
 const ROOT_LEN = path.ROOT.length
+const PROXY_MARKER = '/-----'
 
 /**
  * @param {string} url 
@@ -50,7 +52,7 @@ export function isTurnstileAbsoluteUrl(url, baseUrl) {
  * @param {string} url 
  */
 function isInternalUrl(url) {
-  return !isHttpProto(url) || url.startsWith(PREFIX)
+  return !isHttpProto(url) || url.startsWith(PREFIX) || url.includes(PROXY_MARKER)
 }
 
 
@@ -70,14 +72,27 @@ export function newUrl(url, baseUrl) {
 
 
 /**
- * @param {URL | Location} urlObj 
+ * @param {string} urlStr
  */
-export function encUrlObj(urlObj) {
+function applySessionFromUrl(urlStr) {
+  const parsed = session.parseSessionFromUrl(urlStr)
+  session.setCurrentSessionId(parsed.sessionId)
+  return parsed
+}
+
+
+/**
+ * @param {URL | Location} urlObj 
+ * @param {string=} sessionId
+ */
+export function encUrlObj(urlObj, sessionId) {
   const fullUrl = urlObj.href
   if (isInternalUrl(fullUrl)) {
     return fullUrl
   }
-  return PREFIX + fullUrl
+  const sid = sessionId || session.getCurrentSessionId()
+  const prefix = session.getProxyPrefix(urlObj.origin, sid)
+  return prefix + fullUrl
 }
 
 const IS_SW = env.isSwEnv()
@@ -125,10 +140,16 @@ export function encUrlStrAbs(url) {
  */
 export function decUrlObj(urlObj) {
   const fullUrl = urlObj.href
-  if (!fullUrl.startsWith(PREFIX)) {
+  if (fullUrl.startsWith(PREFIX)) {
+    return fullUrl.substr(PREFIX_LEN)
+  }
+  const parsed = session.parseSessionFromUrl(fullUrl)
+  session.setCurrentSessionId(parsed.sessionId)
+  const idx = parsed.restPath.indexOf(PROXY_MARKER)
+  if (idx === -1) {
     return fullUrl
   }
-  return fullUrl.substr(PREFIX_LEN)
+  return parsed.restPath.substr(idx + PROXY_MARKER.length)
 }
 
 
@@ -197,32 +218,6 @@ export function replaceHttpRefresh(val, relObj) {
 
 /**
  * URL 导航调整
- * 
- * 标准
- *  https://example.com/-----https://www.google.com/
- * 
- * 无路径
- *  https://example.com/-----https://www.google.com
- * 
- * 无协议
- *  https://example.com/-----www.google.com
- * 
- * 任意数量的分隔符
- *  https://example.com/---https://www.google.com
- *  https://example.com/---------https://www.google.com
- *  https://example.com/https://www.google.com
- * 
- * 重复
- *  https://example.com/-----https://example.com/-----https://www.google.com
- * 
- * 别名
- *  https://example.com/google
- * 
- * 
- * 搜索
- *  https://example.com/-----xxx
- *  ->
- *  https://www.google.com/search?q=xxx
  */
 const DEFAULT_ALIAS = {
   'www.google.com': ['google', 'gg', 'g'],
@@ -261,7 +256,6 @@ function getAliasUrl(alias) {
  * @param {string} part 
  */
 function padUrl(part) {
-  // TODO: HSTS
   const urlStr = isHttpProto(part) ? part : `http://${part}`
   const urlObj = newUrl(urlStr)
   if (!urlObj) {
@@ -269,20 +263,14 @@ function padUrl(part) {
   }
   const {hostname} = urlObj
 
-  // http://localhost
   if (!hostname.includes('.')) {
     return
   }
 
-  // http://a.b
   if (!tld.getTld(hostname)) {
     return
   }
 
-  // 数字会被当做 IP 地址:
-  // new URL('http://1024').href == 'http://0.0.4.0'
-  // 这种情况应该搜索，而不是访问
-  // 只有出现完整的 IP 才访问
   if (util.isIPv4(hostname) && !urlStr.includes(hostname)) {
     return
   }
@@ -295,32 +283,34 @@ function padUrl(part) {
  * @param {string} urlStr
  */
 export function adjustNav(urlStr) {
-  // 分隔符 `-----` 之后的部分
-  const rawUrlStr = urlStr.substr(PREFIX_LEN)
+  const parsed = applySessionFromUrl(urlStr)
+  const prefix = session.getProxyPrefix(parsed.origin, parsed.sessionId)
+  const prefixLen = prefix.length
+
+  const rawUrlStr = parsed.restPath.startsWith(PROXY_MARKER)
+    ? parsed.restPath.substr(PROXY_MARKER.length)
+    : parsed.restPath.replace(/^\/-+/, '')
   const rawUrlObj = newUrl(rawUrlStr)
 
   if (rawUrlObj) {
-    // 循环引用
     const m = rawUrlStr.match(/\/-----(https?:\/\/.+)$/)
     if (m) {
-      return PREFIX + m[1]
+      return prefix + m[1]
     }
-    // 标准格式（大概率）
     if (isHttpProto(rawUrlObj.protocol) &&
-        PREFIX + rawUrlObj.href === urlStr
+        prefix + rawUrlObj.href === urlStr
     ) {
       return
     }
   }
 
-  // 任意数量 `-` 之后的部分
-  const part = urlStr.substr(ROOT_LEN).replace(/^-*/, '')
+  const part = parsed.restPath.replace(/^\/+/, '').replace(/^-+/, '')
 
   const ret = getAliasUrl(part) || padUrl(part)
   if (ret) {
-    return PREFIX + ret
+    return prefix + ret
   }
 
   const keyword = part.replace(/&/g, '%26')
-  return PREFIX + DEFAULT_SEARCH.replace('%s', keyword)
+  return prefix + DEFAULT_SEARCH.replace('%s', keyword)
 }

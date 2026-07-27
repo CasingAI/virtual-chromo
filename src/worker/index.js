@@ -77,6 +77,15 @@ async function fetchHandler(request, env) {
     )
   }
 
+  const sessionViewerMatch = urlObj.pathname.match(/^\/s\/[^/]+\/?$/)
+  if (sessionViewerMatch) {
+    return withNoStore(
+      await env.ASSETS.fetch(
+        new Request(new URL('/viewer', urlObj.origin), request),
+      ),
+    )
+  }
+
   switch (urlObj.pathname) {
     case '/http':
       return makeRes('请更新 Worker 到最新版本!')

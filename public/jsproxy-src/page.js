@@ -8,6 +8,8 @@ import * as jsfilter from './jsfilter.js'
 import * as env from './env.js'
 import * as client from './client.js'
 import * as vcReport from './vc-report.js'
+import * as session from './session.js'
+import {handleStoragePush, clearSessionStorage, setStorageMessenger} from './storage.js'
 
 
 const {
@@ -132,7 +134,9 @@ export function init(win) {
   })
 
   // hook 页面和 Worker 相同的 API
-  client.init(win, oriUrlObj.origin)
+  const pageSession = session.parseSessionFromUrl(document.baseURI).sessionId
+  session.setCurrentSessionId(pageSession)
+  client.init(win, oriUrlObj.origin, pageSession)
 
   // 首次安装 document
   // 如果访问加载中的页面，返回 about:blank 空白页
@@ -145,6 +149,8 @@ export function init(win) {
   function sendMsgToSw(cmd, val) {
     swCtl && swCtl.postMessage([cmd, val])
   }
+
+  setStorageMessenger(sendMsgToSw)
 
 
   // TODO: 这部分逻辑需要优化
@@ -185,15 +191,23 @@ export function init(win) {
     const [cmd, val] = e.data
     switch (cmd) {
     case MSG.SW_COOKIE_PUSH:
-      // console.log('PAGE MSG.SW_COOKIE_PUSH:', val)
-      val.forEach(cookie.set)
+      val.forEach(item => cookie.set(item, pageSession))
       break
 
     case MSG.SW_INFO_PUSH:
-      // console.log('PAGE MSG.SW_INFO_PUSH:', val)
-      val.cookies.forEach(cookie.set)
+      val.cookies.forEach(item => cookie.set(item, pageSession))
       route.setConf(val.conf)
       readyCallback()
+      break
+
+    case MSG.SW_STORAGE_PUSH:
+      handleStoragePush(val)
+      break
+
+    case MSG.SW_SESSION_DESTROY:
+      if (val && val.sessionId === pageSession) {
+        clearSessionStorage(pageSession)
+      }
       break
 
     case MSG.SW_CONF_CHANGE:
@@ -369,16 +383,14 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   //
   hook.prop(docProto, 'cookie',
     getter => function() {
-      // console.log('[jsproxy] get document.cookie')
       const {ori} = env.get(this)
-      return cookie.query(ori)
+      return cookie.query(ori, pageSession)
     },
     setter => function(val) {
-      // console.log('[jsproxy] set document.cookie:', val)
       const {ori} = env.get(this)
       const item = cookie.parse(val, ori, Date.now())
       if (item) {
-        cookie.set(item)
+        cookie.set(item, pageSession)
         sendMsgToSw(MSG.PAGE_COOKIE_PUSH, item)
       }
     }
