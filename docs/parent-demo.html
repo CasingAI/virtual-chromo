@@ -102,6 +102,30 @@
     .console-entry.level-error { border-left: 3px solid #ef4444; }
     .console-entry.level-info { border-left: 3px solid #38bdf8; }
     .console-entry.level-debug { border-left: 3px solid #64748b; }
+    #screenshotPanel {
+      border-top: 1px solid #0f3460;
+      padding: 8px;
+      background: #0d1b2a;
+    }
+    #screenshotPanel h3 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #94a3b8;
+    }
+    #screenshotPreview {
+      display: block;
+      max-width: 100%;
+      max-height: 200px;
+      border: 1px solid #0f3460;
+      background: #fff;
+    }
+    #screenshotMeta {
+      margin-top: 4px;
+      font-size: 10px;
+      color: #64748b;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
@@ -114,6 +138,7 @@
     <button id="btnEval" type="button" title="在子页面执行 document.title">Eval</button>
     <button id="btnLog" type="button" title="在子页面 console.log">Log</button>
     <button id="btnAlert" type="button" title="在子页面 alert（应被 noop）">Alert</button>
+    <button id="btnScreenshot" type="button" title="VC_SCREENSHOT">截图</button>
     <button id="btnNewSession" type="button" title="VC_SESSION_CREATE">新 Session</button>
     <button id="btnSameSessionTab" type="button" title="同 session 开第二个 iframe">同 Session Tab</button>
     <button id="btnDestroySession" type="button" title="VC_SESSION_DESTROY">销毁 Session</button>
@@ -136,6 +161,11 @@
     <aside id="consolePanel">
       <h2>Console（VC_CONSOLE_UPDATED + READ）</h2>
       <div id="consoleList"></div>
+      <div id="screenshotPanel">
+        <h3>Screenshot（VC_SCREENSHOT）</h3>
+        <img id="screenshotPreview" alt="screenshot preview" hidden>
+        <div id="screenshotMeta">点击工具栏「截图」</div>
+      </div>
     </aside>
   </div>
 
@@ -154,6 +184,9 @@
       const btnEval = document.getElementById('btnEval')
       const btnLog = document.getElementById('btnLog')
       const btnAlert = document.getElementById('btnAlert')
+      const btnScreenshot = document.getElementById('btnScreenshot')
+      const screenshotPreview = document.getElementById('screenshotPreview')
+      const screenshotMeta = document.getElementById('screenshotMeta')
       const btnNewSession = document.getElementById('btnNewSession')
       const btnSameSessionTab = document.getElementById('btnSameSessionTab')
       const btnDestroySession = document.getElementById('btnDestroySession')
@@ -227,6 +260,15 @@
           payload.after = after
         }
         return vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', payload)
+      }
+
+      function vcScreenshot(options) {
+        return vcRpc(
+          'VC_SCREENSHOT_RESULT',
+          'VC_SCREENSHOT',
+          options || {},
+          { timeout: 60000 },
+        )
       }
 
       function appendConsoleEntries(entries) {
@@ -422,6 +464,40 @@
           })
           .catch(function (err) {
             setStatus('alert 失败: ' + err.message)
+          })
+      })
+      btnScreenshot.addEventListener('click', function () {
+        if (!ready) {
+          setStatus('virtual-chromo 尚未就绪')
+          return
+        }
+        setStatus('截图中…')
+        btnScreenshot.disabled = true
+        vcScreenshot({ format: 'jpeg', quality: 0.72 })
+          .then(function (value) {
+            if (!value || !value.dataUrl) {
+              setStatus('截图返回为空')
+              return
+            }
+            screenshotPreview.src = value.dataUrl
+            screenshotPreview.hidden = false
+            screenshotMeta.textContent =
+              (value.mime || '?') +
+              ' ' +
+              (value.width || '?') +
+              '×' +
+              (value.height || '?') +
+              ' · base64 ' +
+              (value.data ? value.data.length : 0) +
+              ' chars'
+            setStatus('截图完成')
+          })
+          .catch(function (err) {
+            setStatus('截图失败: ' + err.message)
+            console.error('[virtual-chromo screenshot]', err)
+          })
+          .finally(function () {
+            btnScreenshot.disabled = false
           })
       })
       btnNewSession.addEventListener('click', function () {

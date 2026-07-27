@@ -16,7 +16,7 @@
 - [x] **被动 WebView**（build `20260727-v15`+）：子页不自主换页；`VC_CLICK` / `VC_LOCATION` 上报意图，父级 `VC_NAVIGATE` 为唯一整页换址入口
 - [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`
 - [x] **Session / BrowserContext**（build `20260727-v17`+）：`/s/<sessionId>/` 路由、cookie/storage 按 session 隔离、多 tab 共享、`VC_SESSION_*` 协议
-- [ ] screenshot（**待实现**，细节后议）
+- [x] screenshot（build `20260727-v29`+）：`VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`，Base64 回传
 - [ ] 父项目 Page SDK（`createChromoPage(iframe)`）
 - [ ] 用可读源码替换 jsproxy 压缩 `bundle.js`
 - [ ] 生产加固（origin 白名单、SSRF 防护、WebSocket）

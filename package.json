@@ -9,6 +9,7 @@
     "build:bundle": "webpack --config webpack.config.js"
   },
   "devDependencies": {
+    "modern-screenshot": "^4.7.0",
     "webpack": "^5.109.0",
     "webpack-cli": "^7.2.1",
     "wrangler": "^3.99.0"

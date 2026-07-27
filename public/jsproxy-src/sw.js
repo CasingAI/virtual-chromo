@@ -604,6 +604,10 @@ async function onFetch(e) {
     return fetch(origin + parsed.restPath)
   }
 
+  if (parsed.restPath.startsWith('/vendor/')) {
+    return fetch(mConf.assets_cdn + parsed.restPath.slice(1))
+  }
+
   if (parsed.restPath === path.HELPER.replace(path.ROOT, '/') ||
       urlStr.endsWith('__sys__/helper.js')) {
     return fetch(self['__FILE__'])

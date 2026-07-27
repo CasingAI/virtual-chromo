@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v26'
+  const BUILD = '20260727-v29'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -15,6 +15,8 @@
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
+  const MAX_SCREENSHOT_CANVAS = 8192
+  const DEFAULT_SCREENSHOT_QUALITY = 0.72
   const LOAD_ERROR_MARKERS = ['virtual-chromo error', 'virtual-chromo error:']
 
   // ---------------------------------------------------------------------------
@@ -815,6 +817,9 @@
       case 'VC_EVAL':
         evalInContent(payload)
         break
+      case 'VC_SCREENSHOT':
+        captureScreenshot(payload)
+        break
       case 'VC_CONSOLE_READ':
         readConsoleHistory(payload)
         break
@@ -995,6 +1000,194 @@
         err instanceof Error ? err.message : String(err),
         'EVAL_RUNTIME',
         err instanceof Error ? err.stack : undefined
+      )
+    }
+  }
+
+  /** @type {Promise<void>|null} */
+  let mScreenshotLib = null
+
+  /**
+   * Load modern-screenshot once (public/vendor/modern-screenshot.js).
+   * @returns {Promise<void>}
+   */
+  function loadScreenshotLib() {
+    if (mScreenshotLib) {
+      return mScreenshotLib
+    }
+    if (self.modernScreenshot && typeof self.modernScreenshot.domToCanvas === 'function') {
+      mScreenshotLib = Promise.resolve()
+      return mScreenshotLib
+    }
+    mScreenshotLib = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = '/vendor/modern-screenshot.js?b=' + BUILD
+      script.onload = function () {
+        if (self.modernScreenshot && typeof self.modernScreenshot.domToCanvas === 'function') {
+          resolve()
+        } else {
+          mScreenshotLib = null
+          reject(new Error('modern-screenshot loaded but API missing'))
+        }
+      }
+      script.onerror = function () {
+        mScreenshotLib = null
+        reject(new Error('failed to load modern-screenshot.js'))
+      }
+      document.head.appendChild(script)
+    })
+    return mScreenshotLib
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  async function captureScreenshot(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+
+    function replyError(message, code) {
+      postToParent('VC_SCREENSHOT_RESULT', {
+        id,
+        ok: false,
+        error: { message, code },
+      })
+    }
+
+    if (!id) {
+      emitError('VC_SCREENSHOT requires payload.id', 'SCREENSHOT_BAD_REQUEST')
+      replyError('payload.id is required', 'SCREENSHOT_BAD_REQUEST')
+      return
+    }
+    if (!contentFrame) {
+      replyError('content iframe not found', 'SCREENSHOT_NO_CONTENT')
+      return
+    }
+
+    /** @type {Window|null} */
+    let win = null
+    /** @type {Document|null} */
+    let doc = null
+    try {
+      win = contentFrame.contentWindow
+      if (!win) {
+        throw new Error('content window unavailable')
+      }
+      doc = win.document
+      void doc
+    } catch (err) {
+      replyError(
+        err instanceof Error ? err.message : 'cannot access content window',
+        'SCREENSHOT_ACCESS_DENIED',
+      )
+      return
+    }
+
+    if (!readContentState().url && !currentContentUrl) {
+      replyError('no page loaded in content iframe', 'SCREENSHOT_NO_CONTENT')
+      return
+    }
+
+    const format = data.format === 'png' ? 'png' : 'jpeg'
+    const quality =
+      typeof data.quality === 'number'
+        ? Math.min(1, Math.max(0, data.quality))
+        : DEFAULT_SCREENSHOT_QUALITY
+    const fullPage = Boolean(data.fullPage)
+    const scale =
+      typeof data.scale === 'number'
+        ? Math.min(2, Math.max(0.25, data.scale))
+        : Math.min(win.devicePixelRatio || 1, 2)
+
+    try {
+      await loadScreenshotLib()
+      const ms = self.modernScreenshot
+      const el = doc.documentElement
+      const body = doc.body
+      const scrollX = win.scrollX || 0
+      const scrollY = win.scrollY || 0
+      const viewportW = contentFrame.clientWidth || win.innerWidth || el.clientWidth
+      const viewportH = contentFrame.clientHeight || win.innerHeight || el.clientHeight
+
+      const scrollW = Math.max(el.scrollWidth, body ? body.scrollWidth : 0, viewportW)
+      const scrollH = Math.max(el.scrollHeight, body ? body.scrollHeight : 0, viewportH)
+
+      let width = fullPage ? scrollW : viewportW
+      let height = fullPage ? scrollH : viewportH
+      width = Math.min(Math.max(1, Math.floor(width)), MAX_SCREENSHOT_CANVAS)
+      height = Math.min(Math.max(1, Math.floor(height)), MAX_SCREENSHOT_CANVAS)
+
+      const mime = format === 'png' ? 'image/png' : 'image/jpeg'
+      const rasterOpts = {
+        width,
+        height,
+        scale,
+        quality,
+        type: mime,
+        maximumCanvasSize: MAX_SCREENSHOT_CANVAS,
+        backgroundColor: '#ffffff',
+      }
+
+      /** @type {HTMLCanvasElement} */
+      let canvas
+      if (fullPage) {
+        canvas = await ms.domToCanvas(el, rasterOpts)
+      } else {
+        const fullW = Math.min(Math.max(1, Math.floor(scrollW)), MAX_SCREENSHOT_CANVAS)
+        const fullH = Math.min(Math.max(1, Math.floor(scrollH)), MAX_SCREENSHOT_CANVAS)
+        const fullCanvas = await ms.domToCanvas(el, {
+          width: fullW,
+          height: fullH,
+          scale,
+          quality,
+          type: mime,
+          maximumCanvasSize: MAX_SCREENSHOT_CANVAS,
+          backgroundColor: '#ffffff',
+        })
+        canvas = document.createElement('canvas')
+        const cropW = Math.min(Math.floor(viewportW * scale), MAX_SCREENSHOT_CANVAS)
+        const cropH = Math.min(Math.floor(viewportH * scale), MAX_SCREENSHOT_CANVAS)
+        canvas.width = Math.max(1, cropW)
+        canvas.height = Math.max(1, cropH)
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          throw new Error('canvas 2d context unavailable')
+        }
+        const sx = Math.min(Math.floor(scrollX * scale), fullCanvas.width - 1)
+        const sy = Math.min(Math.floor(scrollY * scale), fullCanvas.height - 1)
+        ctx.drawImage(
+          fullCanvas,
+          sx,
+          sy,
+          canvas.width,
+          canvas.height,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        )
+      }
+
+      const dataUrl = canvas.toDataURL(mime, quality)
+      const comma = dataUrl.indexOf(',')
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : ''
+
+      postToParent('VC_SCREENSHOT_RESULT', {
+        id,
+        ok: true,
+        value: {
+          mime,
+          encoding: 'base64',
+          data: base64,
+          dataUrl,
+          width: canvas.width,
+          height: canvas.height,
+        },
+      })
+    } catch (err) {
+      replyError(
+        err instanceof Error ? err.message : String(err),
+        'SCREENSHOT_FAILED',
       )
     }
   }

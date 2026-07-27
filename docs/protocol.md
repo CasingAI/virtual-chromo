@@ -370,6 +370,11 @@ Service Worker 注册完成，bridge 可接收导航命令。
 | `EVAL_ACCESS_DENIED` | 无法访问子页面（跨域等） |
 | `EVAL_RUNTIME` | 子页面内执行报错 |
 | `EVAL_TIMEOUT` | 父项目侧 RPC 超时（未收到 `VC_EVAL_RESULT`） |
+| `SCREENSHOT_BAD_REQUEST` | `VC_SCREENSHOT` 缺少 `id` |
+| `SCREENSHOT_NO_CONTENT` | 子页面尚未加载 |
+| `SCREENSHOT_ACCESS_DENIED` | 无法访问子页面（跨域等） |
+| `SCREENSHOT_FAILED` | DOM rasterize / canvas 异常 |
+| `SCREENSHOT_TIMEOUT` | 父项目侧 RPC 超时（未收到 `VC_SCREENSHOT_RESULT`） |
 | `LOAD_NETWORK_ERROR` | 内层 iframe 网络/文档加载失败（见 `VC_LOAD_FAILED`） |
 | `CONSOLE_BAD_REQUEST` | `VC_CONSOLE_READ` 缺少 `id` |
 
@@ -399,6 +404,86 @@ Service Worker 注册完成，bridge 可接收导航命令。
 ```
 
 **DevTools 式实时 UI**：监听 `VC_CONSOLE_UPDATED` → 用 `after: lastSeenId` 调 `VC_CONSOLE_READ` 增量追加。
+
+### `VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`
+
+对**内层 `#content` 网页**截图（默认可视区域 viewport，对齐 Playwright `page.screenshot()`），以 **Base64** 回传。实现使用 [`public/vendor/modern-screenshot.js`](../public/vendor/modern-screenshot.js) 在 viewer 同域读取 `contentDocument` 后 rasterize。
+
+**父 → iframe**
+
+```javascript
+// ['VC_SCREENSHOT', {
+//   id: 'req-1',           // 必填
+//   format: 'jpeg',        // 'jpeg' | 'png'，默认 jpeg
+//   quality: 0.72,         // jpeg only，0–1
+//   fullPage: false,       // true = 整页 scroll 高度
+//   scale: 1,              // 1–2，默认 min(devicePixelRatio, 2)
+// }]
+```
+
+**iframe → 父（成功）**
+
+```javascript
+// ['VC_SCREENSHOT_RESULT', {
+//   id: 'req-1',
+//   ok: true,
+//   value: {
+//     mime: 'image/jpeg',
+//     encoding: 'base64',
+//     data: '<raw base64，无 data: 前缀>',
+//     dataUrl: 'data:image/jpeg;base64,...',
+//     width: 1200,
+//     height: 800,
+//   }
+// }]
+```
+
+**iframe → 父（失败）**
+
+```javascript
+// ['VC_SCREENSHOT_RESULT', {
+//   id: 'req-1',
+//   ok: false,
+//   error: { message: '...', code: 'SCREENSHOT_FAILED' }
+// }]
+```
+
+推荐父项目侧超时 **60 000 ms**（rasterize 慢于 eval）。Vision / 多模态模型可直接使用 `value.dataUrl` 或 `data:image/jpeg;base64,` + `value.data`。
+
+**推荐用法**（Promise + 超时）：
+
+```javascript
+function vcScreenshot(iframe, options = {}, { timeout = 60_000, targetOrigin = '*' } = {}) {
+  return new Promise((resolve, reject) => {
+    const id = crypto.randomUUID()
+    let settled = false
+    function finish(fn, arg) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      window.removeEventListener('message', onMessage)
+      fn(arg)
+    }
+    const timer = setTimeout(() => {
+      finish(reject, Object.assign(new Error('VC_SCREENSHOT timed out'), {
+        code: 'SCREENSHOT_TIMEOUT',
+        id,
+        timeout,
+      }))
+    }, timeout)
+    function onMessage(event) {
+      if (event.source !== iframe.contentWindow) return
+      if (!Array.isArray(event.data)) return
+      const [cmd, payload] = event.data
+      if (cmd !== 'VC_SCREENSHOT_RESULT' || payload.id !== id) return
+      if (payload.ok) finish(resolve, payload.value)
+      else finish(reject, Object.assign(new Error(payload.error.message), payload.error))
+    }
+    window.addEventListener('message', onMessage)
+    iframe.contentWindow.postMessage(['VC_SCREENSHOT', { id, ...options }], targetOrigin)
+  })
+}
+```
 
 注入方式：[`public/conf.js`](../public/conf.js) 的 `inject_html` 使用 **Worker 绝对 URL**（prepended HTML 含 `<base href="目标站">`，相对路径会解析错）。版本：`VC_VERSION` / `VC_BUILD`；inject 启动日志 `[virtual-chromo] inject.js v...`；内层 iframe 可查 `window.__vcInjected`。
 
@@ -457,7 +542,8 @@ Service Worker 注册完成，bridge 可接收导航命令。
 4. 监听页面生命周期：`VC_NAVIGATING` / `VC_LOADING` / `VC_NAVIGATED` / `VC_LOAD_FAILED`
 5. 子页面内的**读信息、操作 DOM、等待逻辑**优先通过 `vcEval()`（Promise + 超时）执行
 6. Console：监听 `VC_CONSOLE_UPDATED`，用 `VC_CONSOLE_READ` + `after` UUID 增量拉取
-7. 用户点击后退/前进/刷新时发送对应命令
+7. 截图：用 `vcScreenshot()` 获取子页面 Base64 图像（供 vision / 调试）
+8. 用户点击后退/前进/刷新时发送对应命令
 
 ## 嵌入示例
 

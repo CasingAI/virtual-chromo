@@ -152,6 +152,21 @@ document.__vcPassiveNavInstalled  // true（v19+ bundle 侧 capture 已装）
 
 ---
 
+## VC_SCREENSHOT（build `20260727-v29`+）
+
+**能力**：父项目发 `VC_SCREENSHOT`，viewer 在同域读取 `#content` 文档，用 `modern-screenshot` rasterize 后以 Base64 回传（`value.dataUrl` 可直接给 vision 模型）。
+
+**已知限制**：
+
+| 场景 | 表现 |
+|------|------|
+| 内容逃出代理（跨域） | `SCREENSHOT_ACCESS_DENIED`，无法读 `contentDocument` |
+| 复杂 CSS / 跨域直连资源 | 局部空白或样式偏差（与 dom-to-image 类库相同） |
+| `fullPage: true` 超长页 | 长边 cap 8192px，防 OOM |
+| 验证码 / canvas 背景图 | 一般可渲染；依赖资源是否可被同源或 CORS fetch |
+
+---
+
 ## Cloudflare Turnstile / CAPTCHA（已知限制，不再继续修）
 
 **结论：virtual-chromo 可加载 Turnstile 前端（api.js + widget iframe），但无法可靠完成 Cloudflare 服务端验证。**  

@@ -97,7 +97,7 @@ flowchart TB
 | 9 | `VC_QUERY` | 命令 | 读 DOM | 计划 | `可不实现` |
 | 10 | `VC_WAIT_FOR` | 命令 | `page.waitForSelector()` | 计划 | `可不实现` |
 | 11 | `VC_GET_STATE` | 命令 | `page.url()` / `page.title()` | 计划 | `可不实现` · 事件替代 |
-| 12 | `VC_SCREENSHOT` | 命令 | `page.screenshot()` | 待实现 | `待实现` |
+| 12 | `VC_SCREENSHOT` | 命令 | `page.screenshot()` | 已有 | `必须` · `已有` |
 | 13 | `VC_SCROLL` | 命令 | 滚动 | 计划 | `可不实现` |
 | 14 | `VC_READY` | 事件 | — | 已有 | `必须` · `已有` |
 | 15 | `VC_NAVIGATING` | 事件 | 即将导航 | 已有 | `必须` · `已有` |
@@ -114,7 +114,7 @@ flowchart TB
 | 26 | `VC_QUERY_RESULT` | RPC 响应 | — | 计划 | `可不实现` · `随#9` |
 | 27 | `VC_WAIT_FOR_RESULT` | RPC 响应 | — | 计划 | `可不实现` · `随#10` |
 | 28 | `VC_GET_STATE_RESULT` | RPC 响应 | — | 计划 | `可不实现` · `随#11` |
-| 29 | `VC_SCREENSHOT_RESULT` | RPC 响应 | — | 待实现 | `待实现` · `随#12` |
+| 29 | `VC_SCREENSHOT_RESULT` | RPC 响应 | — | 已有 | `必须` · `随#12` · `已有` |
 | 30 | `VC_SCROLL_RESULT` | RPC 响应 | — | 计划 | `可不实现` · `随#13` |
 | 31 | `VC_CONSOLE_READ_RESULT` | RPC 响应 | — | 已有 | `建议保留` · `随#21` · `已有` |
 | 32 | `VC_LOAD_FAILED` | 事件 | 加载失败 | 已有 | `建议保留` · `已有` |
