@@ -144,6 +144,9 @@ export function init(win) {
   initDoc(win, domHook)
 
 
+  // TODO: 这部分逻辑需要优化
+  let readyCallback
+
   const sw = navigator.serviceWorker
   const swCtl = sw.controller
 
@@ -153,9 +156,41 @@ export function init(win) {
 
   setStorageMessenger(sendMsgToSw)
 
+  // Register before PAGE_INFO_PULL so SW_INFO_PUSH cannot be missed (which
+  // would clear pageWait's soft timeout via PAGE_INIT_BEG and hang forever).
+  sw.addEventListener('message', e => {
+    const [cmd, val] = e.data
+    switch (cmd) {
+    case MSG.SW_COOKIE_PUSH:
+      val.forEach(item => cookie.set(item, pageSession))
+      break
 
-  // TODO: 这部分逻辑需要优化
-  let readyCallback
+    case MSG.SW_INFO_PUSH:
+      val.cookies.forEach(item => cookie.set(item, pageSession))
+      route.setConf(val.conf)
+      if (readyCallback) {
+        readyCallback()
+      }
+      break
+
+    case MSG.SW_STORAGE_PUSH:
+      handleStoragePush(val)
+      break
+
+    case MSG.SW_SESSION_DESTROY:
+      if (val && val.sessionId === pageSession) {
+        clearSessionStorage(pageSession)
+      }
+      break
+
+    case MSG.SW_CONF_CHANGE:
+      route.setConf(val)
+      break
+    }
+    e.stopImmediatePropagation()
+  }, true)
+
+  sw.startMessages && sw.startMessages()
 
   function pageAsyncInit() {
     const curScript = document.currentScript
@@ -187,38 +222,6 @@ export function init(win) {
   }
   pageAsyncInit()
 
-
-  sw.addEventListener('message', e => {
-    const [cmd, val] = e.data
-    switch (cmd) {
-    case MSG.SW_COOKIE_PUSH:
-      val.forEach(item => cookie.set(item, pageSession))
-      break
-
-    case MSG.SW_INFO_PUSH:
-      val.cookies.forEach(item => cookie.set(item, pageSession))
-      route.setConf(val.conf)
-      readyCallback()
-      break
-
-    case MSG.SW_STORAGE_PUSH:
-      handleStoragePush(val)
-      break
-
-    case MSG.SW_SESSION_DESTROY:
-      if (val && val.sessionId === pageSession) {
-        clearSessionStorage(pageSession)
-      }
-      break
-
-    case MSG.SW_CONF_CHANGE:
-      route.setConf(val)
-      break
-    }
-    e.stopImmediatePropagation()
-  }, true)
-
-  sw.startMessages && sw.startMessages()
 
   //
   // hook ServiceWorker

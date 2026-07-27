@@ -12,6 +12,7 @@
 - [ ] Playwright 式语义命令（click / fill / waitFor / query，**可选**；eval 原语优先）
 - [x] 页面加载失败事件 `VC_LOAD_FAILED`
 - [x] Console：`VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`（UUID 增量）
+- [x] Network：`VC_NETWORK_UPDATED` + `VC_NETWORK_READ`（SW 代理流量，UUID 增量）
 - [x] `public/inject.js`（console hook、dialog noop）
 - [x] **被动 WebView**（build `20260727-v15`+）：子页不自主换页；`VC_CLICK` / `VC_LOCATION` 上报意图，父级 `VC_NAVIGATE` 为唯一整页换址入口
 - [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`

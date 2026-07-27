@@ -7,14 +7,18 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v29'
+  const BUILD = '20260727-v45'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
   const MSG_SW_SESSION_LIST = 304
+  const MSG_SW_NETWORK_PUSH = 305
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
+  const MAX_NETWORK_ENTRIES = 500
+  const DEFAULT_NETWORK_READ_LIMIT = 100
+  const MAX_NETWORK_READ_LIMIT = 500
   const MAX_SCREENSHOT_CANVAS = 8192
   const DEFAULT_SCREENSHOT_QUALITY = 0.72
   const LOAD_ERROR_MARKERS = ['virtual-chromo error', 'virtual-chromo error:']
@@ -25,12 +29,16 @@
   const DebugPanel = (function () {
     const MAX_LOGS = 500
     const MAX_MESSAGES = 300
+    const MAX_NETWORK = 500
 
     /** @type {{ level: string, args: string[], at: number }[]} */
     const logs = []
 
     /** @type {{ direction: string, cmd: string, payload: string, at: number, meta?: string }[]} */
     const messages = []
+
+    /** @type {{ id: string, method: string, url: string, status: number, type: string, size: number, duration: number, failed: boolean, bypass: boolean, ts: number }[]} */
+    const networkEntries = []
 
     /** @type {(() => Record<string, unknown>) | null} */
     let stateProvider = null
@@ -66,6 +74,9 @@
 
     /** @type {HTMLElement | null} */
     let stateView = null
+
+    /** @type {HTMLElement | null} */
+    let networkList = null
 
     /**
      * @param {unknown} value
@@ -212,6 +223,73 @@
       msgList.scrollTop = msgList.scrollHeight
     }
 
+    /**
+     * @param {{ id: string, method: string, url: string, status: number, type: string, size: number, duration: number, failed: boolean, bypass: boolean, pending?: boolean, ts: number }} entry
+     */
+    function addNetwork(entry) {
+      const idx = networkEntries.findIndex((item) => item.id === entry.id)
+      if (idx >= 0) {
+        networkEntries[idx] = entry
+      } else {
+        networkEntries.push(entry)
+        if (networkEntries.length > MAX_NETWORK) {
+          networkEntries.shift()
+        }
+      }
+      if (panelOpen && activeTab === 'network') {
+        renderNetwork()
+      }
+    }
+
+    function renderNetwork() {
+      if (!networkList) {
+        return
+      }
+      networkList.innerHTML = ''
+      const frag = document.createDocumentFragment()
+      for (const item of networkEntries) {
+        const row = document.createElement('div')
+        let cls = 'vcd-net'
+        if (item.failed) {
+          cls += ' vcd-net--fail'
+        }
+        if (item.bypass) {
+          cls += ' vcd-net--bypass'
+        }
+        if (item.pending) {
+          cls += ' vcd-net--pending'
+        }
+        row.className = cls
+        const head =
+          (item.method || 'GET') +
+          ' ' +
+          (item.pending ? '(pending)' : item.status || '-') +
+          ' ' +
+          (item.type || '') +
+          ' ' +
+          (item.duration || 0) +
+          'ms' +
+          (item.bypass ? ' [bypass]' : '')
+        const headEl = document.createElement('div')
+        headEl.className = 'vcd-net__head'
+        headEl.textContent = head
+        const urlEl = document.createElement('div')
+        urlEl.className = 'vcd-net__url'
+        urlEl.textContent = item.url || ''
+        row.appendChild(headEl)
+        row.appendChild(urlEl)
+        frag.appendChild(row)
+      }
+      if (!networkEntries.length) {
+        const empty = document.createElement('div')
+        empty.className = 'vcd-empty'
+        empty.textContent = '暂无网络请求'
+        frag.appendChild(empty)
+      }
+      networkList.appendChild(frag)
+      networkList.scrollTop = networkList.scrollHeight
+    }
+
     function renderState() {
       if (!stateView) {
         return
@@ -313,6 +391,8 @@
         renderMessages()
       } else if (tab === 'state') {
         renderState()
+      } else if (tab === 'network') {
+        renderNetwork()
       }
     }
 
@@ -406,11 +486,13 @@
         '<div class="vcd-tabs">' +
         '<button type="button" class="vcd-tab is-active" data-tab="log">日志</button>' +
         '<button type="button" class="vcd-tab" data-tab="msg">通讯</button>' +
+        '<button type="button" class="vcd-tab" data-tab="network">网络</button>' +
         '<button type="button" class="vcd-tab" data-tab="state">状态</button>' +
         '</div>' +
         '<div class="vcd-body">' +
         '<div class="vcd-pane" data-pane="log"></div>' +
         '<div class="vcd-pane" data-pane="msg" hidden></div>' +
+        '<div class="vcd-pane" data-pane="network" hidden></div>' +
         '<div class="vcd-pane" data-pane="state" hidden></div>' +
         '</div></div>'
 
@@ -456,7 +538,12 @@
         '.vcd-history__item{padding:6px 0;border-bottom:1px solid #212529}' +
         '.vcd-history__meta{color:#868e96;font-size:10px}' +
         '.vcd-history__url{color:#74c0fc;word-break:break-all}' +
-        '.vcd-history__title{color:#ced4da;margin-top:1px}'
+        '.vcd-history__title{color:#ced4da;margin-top:1px}' +
+        '.vcd-net{padding:5px 8px;border-bottom:1px solid #212529;font:10px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}' +
+        '.vcd-net--fail .vcd-net__head{color:#ff6b6b}' +
+        '.vcd-net--bypass{border-left:2px solid #f59f00}' +
+        '.vcd-net__head{color:#69db7c;font-weight:600}' +
+        '.vcd-net__url{color:#adb5bd;word-break:break-all;margin-top:2px}'
 
       document.head.appendChild(style)
       document.body.appendChild(root)
@@ -464,6 +551,7 @@
       panel = root.querySelector('.vcd-panel')
       logList = root.querySelector('[data-pane="log"]')
       msgList = root.querySelector('[data-pane="msg"]')
+      networkList = root.querySelector('[data-pane="network"]')
       stateView = root.querySelector('[data-pane="state"]')
 
       const switchBtn = root.querySelector('.vcd-switch')
@@ -490,6 +578,9 @@
         } else if (activeTab === 'msg') {
           messages.length = 0
           renderMessages()
+        } else if (activeTab === 'network') {
+          networkEntries.length = 0
+          renderNetwork()
         } else if (activeTab === 'state') {
           // state is live snapshot; clearing history is more useful
           renderState()
@@ -547,6 +638,7 @@
         addLog('error', Array.from(arguments))
       },
       message: addMessage,
+      network: addNetwork,
       setStateProvider,
     }
   })()
@@ -611,6 +703,8 @@
       ? req.sessionId
       : sessionId
     destroySessionViaSw(id)
+    networkBuffer.length = 0
+    networkPendingNotifyCount = 0
     postToParent('VC_SESSION_DESTROYED', { sessionId: id })
   }
 
@@ -660,6 +754,12 @@
 
   /** @type {number} */
   let consolePendingNotifyCount = 0
+
+  /** @type {{ id: string, ts: number, method: string, url: string, status: number, type: string, size: number, duration: number, failed: boolean, bypass: boolean }[]} */
+  const networkBuffer = []
+
+  /** @type {number} */
+  let networkPendingNotifyCount = 0
 
   /**
    * @param {string} level
@@ -778,6 +878,9 @@
     if (cmd === MSG_SW_SESSION_DESTROY && payload && payload.sessionId) {
       postToParent('VC_SESSION_GONE', { sessionId: payload.sessionId })
     }
+    if (cmd === MSG_SW_NETWORK_PUSH && payload && typeof payload === 'object') {
+      appendNetworkEntry(payload)
+    }
   }
 
   /**
@@ -811,6 +914,9 @@
       case 'VC_RELOAD':
         reloadContent()
         break
+      case 'VC_STOP':
+        stopContent()
+        break
       case 'VC_PING':
         postToParent('VC_PONG')
         break
@@ -822,6 +928,9 @@
         break
       case 'VC_CONSOLE_READ':
         readConsoleHistory(payload)
+        break
+      case 'VC_NETWORK_READ':
+        readNetworkHistory(payload)
         break
       case 'VC_SESSION_CREATE':
         createSession(payload)
@@ -937,6 +1046,22 @@
     contentFrame.src = proxySrc
   }
 
+  function stopContent() {
+    if (!contentFrame) {
+      emitLoading(false)
+      return
+    }
+    try {
+      const win = contentFrame.contentWindow
+      if (win && typeof win.stop === 'function') {
+        win.stop()
+      }
+    } catch {
+      // Cross-origin escape: still clear loading UI.
+    }
+    emitLoading(false)
+  }
+
   /**
    * @param {unknown} payload
    */
@@ -1007,6 +1132,9 @@
   /** @type {Promise<void>|null} */
   let mScreenshotLib = null
 
+  /** @type {WeakMap<Window, Promise<void>>} */
+  const mContentScreenshotLib = new WeakMap()
+
   /**
    * Load modern-screenshot once (public/vendor/modern-screenshot.js).
    * @returns {Promise<void>}
@@ -1037,6 +1165,370 @@
       document.head.appendChild(script)
     })
     return mScreenshotLib
+  }
+
+  /**
+   * 在 #content iframe 内加载 modern-screenshot（与页面同文档，样式表才能正确 rasterize）。
+   * @param {Window} contentWin
+   * @returns {Promise<void>}
+   */
+  function loadScreenshotLibInContent(contentWin) {
+    if (
+      contentWin.modernScreenshot &&
+      typeof contentWin.modernScreenshot.domToCanvas === 'function'
+    ) {
+      return Promise.resolve()
+    }
+    mContentScreenshotLib.delete(contentWin)
+
+    const promise = (async () => {
+      await loadScreenshotLib()
+      const res = await fetch(window.location.origin + '/vendor/modern-screenshot.js?b=' + BUILD, {
+        cache: 'force-cache',
+      })
+      if (!res.ok) {
+        throw new Error('fetch modern-screenshot.js failed: ' + res.status)
+      }
+      const code = await res.text()
+      contentWin.eval(code)
+      if (
+        !contentWin.modernScreenshot ||
+        typeof contentWin.modernScreenshot.domToCanvas !== 'function'
+      ) {
+        throw new Error('modern-screenshot eval in content but API missing')
+      }
+    })().catch((err) => {
+      mContentScreenshotLib.delete(contentWin)
+      throw err
+    })
+    mContentScreenshotLib.set(contentWin, promise)
+    return promise
+  }
+
+  function isElementNode(node) {
+    return !!(node && node.nodeType === 1)
+  }
+
+  function isHtmlElementNode(node) {
+    // 不能用 instanceof HTMLElement：viewer/content 不同 realm，会恒为 false
+    return isElementNode(node) && typeof node.style === 'object' && node.style !== null
+  }
+
+  function isHtmlImageNode(node) {
+    return isElementNode(node) && String(node.tagName).toUpperCase() === 'IMG'
+  }
+
+  /**
+   * modern-screenshot 拉取跨域 CSS 背景图会 CORS 失败；在 content 上下文走代理同源 fetch。
+   * @param {Window} contentWin
+   */
+  function toProxiedAssetUrl(contentWin, absoluteUrl) {
+    const normalized = absoluteUrl
+      .replace(/^https?:\/\//i, 'https://')
+      .replace(/\?/g, '%3F')
+      .replace(/#/g, '%23')
+    const href = contentWin.location.href
+    const marker = href.indexOf(PROXY_PREFIX)
+    if (marker !== -1) {
+      return href.slice(0, marker + PROXY_PREFIX.length) + normalized
+    }
+    return toProxyUrl(absoluteUrl)
+  }
+
+  /**
+   * @param {string} cssValue
+   * @param {Window} contentWin
+   */
+  function rewriteCssUrlList(cssValue, contentWin) {
+    if (!cssValue || !cssValue.includes('url(')) {
+      return cssValue
+    }
+    return cssValue.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (_match, quote, raw) => {
+      const trimmed = raw.trim()
+      try {
+        const parsed = new URL(trimmed, contentWin.document.baseURI || contentWin.location.href)
+        if (
+          (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+          parsed.origin !== contentWin.location.origin
+        ) {
+          return 'url(' + quote + toProxiedAssetUrl(contentWin, parsed.href) + quote + ')'
+        }
+        return 'url(' + quote + parsed.href + quote + ')'
+      } catch {
+        return 'url(' + quote + trimmed + quote + ')'
+      }
+    })
+  }
+
+  /**
+   * 克隆 DOM 中跨域 background-image / img src 改写成 content 同源代理 URL。
+   * @param {Node} root
+   * @param {Window} contentWin
+   */
+  function rewriteScreenshotCloneUrls(root, contentWin) {
+    if (!isElementNode(root)) {
+      return
+    }
+    /** @type {Element[]} */
+    const nodes = root.querySelectorAll ? [root, ...root.querySelectorAll('*')] : [root]
+    for (const node of nodes) {
+      if (!isHtmlElementNode(node)) {
+        continue
+      }
+      if (node.style.backgroundImage) {
+        node.style.backgroundImage = rewriteCssUrlList(node.style.backgroundImage, contentWin)
+      }
+      if (node.tagName === 'IMG') {
+        const src = node.getAttribute('src')
+        if (!src || src.startsWith('data:')) {
+          continue
+        }
+        try {
+          const parsed = new URL(src, contentWin.document.baseURI || contentWin.location.href)
+          if (
+            (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+            parsed.origin !== contentWin.location.origin
+          ) {
+            node.setAttribute('src', toProxiedAssetUrl(contentWin, parsed.href))
+          }
+        } catch {
+          /* keep */
+        }
+      }
+    }
+  }
+
+  /**
+   * 拉取截图资源：交给 content 的 fetch hook 做代理（不要先拼 /-----，否则偶发异常）。
+   * @param {Window} contentWin
+   * @param {string} absoluteUrl
+   */
+  async function fetchScreenshotAsset(contentWin, absoluteUrl) {
+    let target = absoluteUrl
+    try {
+      const parsed = new URL(absoluteUrl)
+      // 已是代理 URL 则原样；否则用目标站绝对地址，由 jsproxy fetch hook 编码
+      if (!parsed.pathname.includes(PROXY_PREFIX) && !parsed.href.includes(PROXY_PREFIX)) {
+        target = parsed.href
+      }
+    } catch {
+      /* keep */
+    }
+    const response = await contentWin.fetch(target, {
+      credentials: 'include',
+      cache: 'force-cache',
+    })
+    if (!response.ok) {
+      throw new Error('asset fetch ' + response.status)
+    }
+    return await response.blob()
+  }
+
+  /**
+   * 截图前把 img / background-image 固化成 data:（截图后恢复）。
+   * 解决：<base href> 把资源解析到目标站，显示正常，但 rasterize 时易裂图/空白。
+   * @param {Document} doc
+   * @param {Window} contentWin
+   * @param {Element} [scope]
+   */
+  async function materializeDomMedia(doc, contentWin, scope) {
+    /** @type {(() => void)[]} */
+    const restores = []
+    const root = isElementNode(scope) ? scope : doc.documentElement
+    /** @type {Map<string, string>} */
+    const cache = new Map()
+
+    async function toDataUrl(absolute) {
+      const hit = cache.get(absolute)
+      if (hit) {
+        return hit
+      }
+      const blob = await fetchScreenshotAsset(contentWin, absolute)
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+        reader.readAsDataURL(blob)
+      })
+      cache.set(absolute, dataUrl)
+      return dataUrl
+    }
+
+    function resolveAssetUrl(raw) {
+      const trimmed = String(raw || '').trim()
+      if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+        return null
+      }
+      try {
+        return new URL(trimmed, contentWin.document.baseURI || contentWin.location.href).href
+      } catch {
+        return null
+      }
+    }
+
+    // 1) <img src>
+    const imgs = root.querySelectorAll ? root.querySelectorAll('img') : []
+    for (const img of imgs) {
+      if (!isHtmlImageNode(img)) {
+        continue
+      }
+      if (img.hasAttribute('data-vc-shot-tile')) {
+        continue
+      }
+      const raw = img.getAttribute('src') || ''
+      const absolute = resolveAssetUrl(raw)
+      if (!absolute) {
+        continue
+      }
+      try {
+        const dataUrl = await toDataUrl(absolute)
+        const prev = img.getAttribute('src')
+        restores.push(() => {
+          if (prev == null) {
+            img.removeAttribute('src')
+          } else {
+            img.setAttribute('src', prev)
+          }
+        })
+        img.setAttribute('src', dataUrl)
+      } catch (err) {
+        vlog('warn', ['img materialize failed', absolute.slice(0, 80), err])
+      }
+    }
+
+    // 2) CSS background-image（含验证码 tile）
+    const nodes = root.querySelectorAll ? [root, ...root.querySelectorAll('*')] : []
+    for (const el of nodes) {
+      if (!isHtmlElementNode(el)) {
+        continue
+      }
+      let bg = el.style.backgroundImage
+      if (!bg || bg === 'none') {
+        continue
+      }
+      if (!bg.includes('url(') || bg.includes('data:')) {
+        continue
+      }
+
+      const isAnomalyTile = /\banomaly-modal__image\b/.test(el.className || '')
+      const match = bg.match(/url\(\s*(['"]?)([^'")]+)\1\s*\)/i)
+      if (!match) {
+        continue
+      }
+      const absolute = resolveAssetUrl(match[2])
+      if (!absolute) {
+        continue
+      }
+
+      try {
+        const dataUrl = await toDataUrl(absolute)
+        if (isAnomalyTile) {
+          const prevBg = el.style.backgroundImage
+          const prevPos = el.style.position
+          const img = doc.createElement('img')
+          img.setAttribute('data-vc-shot-tile', '1')
+          img.src = dataUrl
+          img.alt = ''
+          img.style.cssText =
+            'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;'
+          if (!prevPos) {
+            el.style.position = 'relative'
+          }
+          el.style.backgroundImage = 'none'
+          el.appendChild(img)
+          restores.push(() => {
+            img.remove()
+            el.style.backgroundImage = prevBg
+            if (!prevPos) {
+              el.style.position = ''
+            }
+          })
+        } else {
+          const prevBg = el.style.backgroundImage
+          restores.push(() => {
+            el.style.backgroundImage = prevBg
+          })
+          el.style.backgroundImage = 'url("' + dataUrl + '")'
+        }
+      } catch (err) {
+        vlog('warn', ['bg materialize failed', absolute.slice(0, 80), err])
+      }
+    }
+
+    vlog('info', ['screenshot media materialized', cache.size + ' assets'])
+    return function restoreDomMedia() {
+      for (let i = restores.length - 1; i >= 0; i--) {
+        try {
+          restores[i]()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  /**
+   * DDG SERP 等大 DOM 上对 documentElement rasterize 会得到空白；
+   * 可见的验证码/对话框层单独截则正常。
+   * @param {Document} doc
+   * @param {Window} contentWin
+   * @returns {Element}
+   */
+  function pickScreenshotRoot(doc, contentWin) {
+    const candidates = [
+      '.anomaly-modal__modal',
+      '.anomaly-modal__mask',
+      '[role="dialog"]',
+      '[aria-modal="true"]',
+    ]
+    const vw = contentWin.innerWidth || 0
+    const vh = contentWin.innerHeight || 0
+    for (const sel of candidates) {
+      /** @type {Element|null} */
+      let el = null
+      try {
+        el = doc.querySelector(sel)
+      } catch {
+        continue
+      }
+      if (!el || !isHtmlElementNode(el)) {
+        continue
+      }
+      try {
+        const style = contentWin.getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          continue
+        }
+        const rect = el.getBoundingClientRect()
+        if (rect.width < 80 || rect.height < 80) {
+          continue
+        }
+        // 覆盖大半视口，或至少是明确的验证码层
+        if (
+          sel.indexOf('anomaly') !== -1 ||
+          (rect.width >= vw * 0.4 && rect.height >= vh * 0.4)
+        ) {
+          return el
+        }
+      } catch {
+        continue
+      }
+    }
+    return doc.documentElement
+  }
+
+  function createProxiedScreenshotFetch(contentWin) {
+    return async function proxiedScreenshotFetch(url) {
+      let absolute = url
+      try {
+        absolute = new URL(url, contentWin.document.baseURI || contentWin.location.href).href
+      } catch {
+        /* keep raw */
+      }
+      // 不要预先拼 /-----：content fetch 已被 jsproxy hook，会自行编码
+      const blob = await fetchScreenshotAsset(contentWin, absolute)
+      return blob
+    }
   }
 
   /**
@@ -1101,50 +1593,127 @@
 
     try {
       await loadScreenshotLib()
-      const ms = self.modernScreenshot
-      const el = doc.documentElement
-      const body = doc.body
-      const scrollX = win.scrollX || 0
-      const scrollY = win.scrollY || 0
-      const viewportW = contentFrame.clientWidth || win.innerWidth || el.clientWidth
-      const viewportH = contentFrame.clientHeight || win.innerHeight || el.clientHeight
+      /** @type {typeof self.modernScreenshot|null} */
+      let ms = null
+      try {
+        await loadScreenshotLibInContent(win)
+        if (win.modernScreenshot && typeof win.modernScreenshot.domToCanvas === 'function') {
+          ms = win.modernScreenshot
+        }
+      } catch (contentLibErr) {
+        vlog('warn', ['content modern-screenshot unavailable, using iframe capture:', contentLibErr])
+      }
+      if (!ms) {
+        ms = self.modernScreenshot
+      }
+      if (!ms || typeof ms.domToCanvas !== 'function') {
+        throw new Error('modern-screenshot unavailable')
+      }
 
-      const scrollW = Math.max(el.scrollWidth, body ? body.scrollWidth : 0, viewportW)
-      const scrollH = Math.max(el.scrollHeight, body ? body.scrollHeight : 0, viewportH)
+      /** 无法在 content 注入库时，改对 #content iframe 元素截图（保留浏览器真实绘制） */
+      const useIframeCapture = ms === self.modernScreenshot
+      const captureRoot = useIframeCapture ? contentFrame : pickScreenshotRoot(doc, win)
+      const el = captureRoot
+      const body = useIframeCapture ? null : doc.body
+      const scrollX = useIframeCapture || captureRoot !== doc.documentElement ? 0 : win.scrollX || 0
+      const scrollY = useIframeCapture || captureRoot !== doc.documentElement ? 0 : win.scrollY || 0
+      const viewportW =
+        contentFrame.clientWidth ||
+        win.innerWidth ||
+        (isHtmlElementNode(el) ? el.clientWidth : 0)
+      const viewportH =
+        contentFrame.clientHeight ||
+        win.innerHeight ||
+        (isHtmlElementNode(el) ? el.clientHeight : 0)
+
+      const rootW =
+        captureRoot !== doc.documentElement && isElementNode(el)
+          ? Math.ceil(el.getBoundingClientRect().width) || viewportW
+          : viewportW
+      const rootH =
+        captureRoot !== doc.documentElement && isElementNode(el)
+          ? Math.ceil(el.getBoundingClientRect().height) || viewportH
+          : viewportH
+
+      const scrollW = useIframeCapture
+        ? viewportW
+        : captureRoot !== doc.documentElement
+          ? rootW
+          : Math.max(el.scrollWidth, body ? body.scrollWidth : 0, viewportW)
+      const scrollH = useIframeCapture
+        ? viewportH
+        : captureRoot !== doc.documentElement
+          ? rootH
+          : Math.max(el.scrollHeight, body ? body.scrollHeight : 0, viewportH)
 
       let width = fullPage ? scrollW : viewportW
       let height = fullPage ? scrollH : viewportH
+      const captureFocused =
+        !useIframeCapture && captureRoot !== doc.documentElement
+      if (captureFocused) {
+        width = rootW
+        height = rootH
+      }
       width = Math.min(Math.max(1, Math.floor(width)), MAX_SCREENSHOT_CANVAS)
       height = Math.min(Math.max(1, Math.floor(height)), MAX_SCREENSHOT_CANVAS)
 
       const mime = format === 'png' ? 'image/png' : 'image/jpeg'
-      const rasterOpts = {
-        width,
-        height,
+      const screenshotFetch = createProxiedScreenshotFetch(win)
+      const rasterBase = {
         scale,
         quality,
         type: mime,
         maximumCanvasSize: MAX_SCREENSHOT_CANVAS,
         backgroundColor: '#ffffff',
+        fetchFn: screenshotFetch,
+        timeout: 30000,
+        onCloneNode: (cloned) => {
+          rewriteScreenshotCloneUrls(cloned, win)
+        },
       }
+
+      if (ms.waitUntilLoad && !useIframeCapture) {
+        await ms.waitUntilLoad(body || el, { timeout: 15000 })
+      }
+
+      const restoreBackgrounds = useIframeCapture
+        ? function noopRestoreBackgrounds() {}
+        : await materializeDomMedia(
+            doc,
+            win,
+            captureFocused ? captureRoot : doc.documentElement,
+          )
+
+      vlog('info', [
+        'screenshot root:',
+        captureFocused
+          ? captureRoot.className || captureRoot.tagName
+          : useIframeCapture
+            ? 'iframe'
+            : 'documentElement',
+        width + 'x' + height,
+        'scale=' + scale,
+      ])
 
       /** @type {HTMLCanvasElement} */
       let canvas
-      if (fullPage) {
-        canvas = await ms.domToCanvas(el, rasterOpts)
+      try {
+      // 对话框/验证码层：按节点自身尺寸截；整页才走 scroll crop
+      if (useIframeCapture || fullPage || captureFocused) {
+        canvas = await ms.domToCanvas(el, {
+          ...rasterBase,
+          width,
+          height,
+        })
       } else {
         const fullW = Math.min(Math.max(1, Math.floor(scrollW)), MAX_SCREENSHOT_CANVAS)
         const fullH = Math.min(Math.max(1, Math.floor(scrollH)), MAX_SCREENSHOT_CANVAS)
         const fullCanvas = await ms.domToCanvas(el, {
+          ...rasterBase,
           width: fullW,
           height: fullH,
-          scale,
-          quality,
-          type: mime,
-          maximumCanvasSize: MAX_SCREENSHOT_CANVAS,
-          backgroundColor: '#ffffff',
         })
-        canvas = document.createElement('canvas')
+        canvas = win.document.createElement('canvas')
         const cropW = Math.min(Math.floor(viewportW * scale), MAX_SCREENSHOT_CANVAS)
         const cropH = Math.min(Math.floor(viewportH * scale), MAX_SCREENSHOT_CANVAS)
         canvas.width = Math.max(1, cropW)
@@ -1166,6 +1735,9 @@
           canvas.width,
           canvas.height,
         )
+      }
+      } finally {
+        restoreBackgrounds()
       }
 
       const dataUrl = canvas.toDataURL(mime, quality)
@@ -1482,6 +2054,97 @@
       consoleBuffer.length > 0 ? consoleBuffer[consoleBuffer.length - 1].id : after || null
 
     postToParent('VC_CONSOLE_READ_RESULT', {
+      id,
+      ok: true,
+      value: {
+        entries,
+        latestId,
+      },
+    })
+  }
+
+  /**
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean }} raw
+   */
+  function appendNetworkEntry(raw) {
+    const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
+    const entry = {
+      id,
+      ts: typeof raw.ts === 'number' ? raw.ts : Date.now(),
+      method: typeof raw.method === 'string' ? raw.method : 'GET',
+      url: typeof raw.url === 'string' ? raw.url : '',
+      status: typeof raw.status === 'number' ? raw.status : 0,
+      type: typeof raw.type === 'string' ? raw.type : '',
+      size: typeof raw.size === 'number' ? raw.size : 0,
+      duration: typeof raw.duration === 'number' ? raw.duration : 0,
+      failed: !!raw.failed,
+      bypass: !!raw.bypass,
+      pending: !!raw.pending,
+    }
+    const existing = networkBuffer.findIndex((item) => item.id === id)
+    if (existing >= 0) {
+      networkBuffer[existing] = entry
+    } else {
+      networkBuffer.push(entry)
+      if (networkBuffer.length > MAX_NETWORK_ENTRIES) {
+        networkBuffer.shift()
+      }
+      networkPendingNotifyCount += 1
+    }
+    DebugPanel.network(entry)
+    flushNetworkNotify(entry)
+  }
+
+  /**
+   * @param {{ id: string, pending?: boolean }} entry
+   */
+  function flushNetworkNotify(entry) {
+    const count = networkPendingNotifyCount
+    networkPendingNotifyCount = 0
+    postToParent('VC_NETWORK_UPDATED', {
+      latestId: entry.id,
+      count,
+      entry,
+    })
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function readNetworkHistory(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+
+    function replyError(message, code) {
+      postToParent('VC_NETWORK_READ_RESULT', {
+        id,
+        ok: false,
+        error: { message, code },
+      })
+    }
+
+    if (!id) {
+      emitError('VC_NETWORK_READ requires payload.id', 'NETWORK_BAD_REQUEST')
+      return
+    }
+
+    let limit = DEFAULT_NETWORK_READ_LIMIT
+    if (typeof data.limit === 'number' && data.limit > 0) {
+      limit = Math.min(Math.floor(data.limit), MAX_NETWORK_READ_LIMIT)
+    }
+
+    const after = typeof data.after === 'string' ? data.after : ''
+    let startIndex = 0
+    if (after) {
+      const idx = networkBuffer.findIndex((entry) => entry.id === after)
+      startIndex = idx >= 0 ? idx + 1 : 0
+    }
+
+    const entries = networkBuffer.slice(startIndex, startIndex + limit)
+    const latestId =
+      networkBuffer.length > 0 ? networkBuffer[networkBuffer.length - 1].id : after || null
+
+    postToParent('VC_NETWORK_READ_RESULT', {
       id,
       ok: true,
       value: {

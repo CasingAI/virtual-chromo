@@ -77,6 +77,14 @@ iframe.contentWindow.postMessage(['VC_FORWARD'], '*')
 iframe.contentWindow.postMessage(['VC_RELOAD'], '*')
 ```
 
+### `VC_STOP`
+
+停止当前页面加载（等价于浏览器停止按钮 / `window.stop()`），并上报 `VC_LOADING(false)`。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_STOP'], '*')
+```
+
 ### `VC_PING`
 
 健康检查。
@@ -201,6 +209,17 @@ await vcEval(iframe, `
 // 仅返回 after UUID 之后的条目
 await vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', {
   after: lastSeenConsoleId,
+  limit: 100,
+})
+```
+
+### `VC_NETWORK_READ`
+
+拉取 Service Worker 代理的网络请求历史（Promise + 超时，见 [RPC 接入规范](#rpc-接入规范)）。
+
+```javascript
+await vcRpc('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', {
+  after: lastSeenNetworkId,
   limit: 100,
 })
 ```
@@ -344,6 +363,20 @@ Service Worker 注册完成，bridge 可接收导航命令。
 
 收到后调用 `VC_CONSOLE_READ`，传入 `after` 指向上次已读 UUID。
 
+### `VC_NETWORK_UPDATED`
+
+Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 `pending → done`）。payload 可携带完整 `entry`，父级应 **按 id upsert**；也可再调 `VC_NETWORK_READ` 增量拉取。
+
+```javascript
+// ['VC_NETWORK_UPDATED', {
+//   latestId: 'uuid-of-newest-entry',
+//   count: 3,
+//   entry: { id, ts, method, url, status, type, size, duration, failed, bypass, pending }
+// }]
+```
+
+`pending: true` 表示请求仍在进行（例如 HTML 仍卡在页面初始化握手）；完成后会再推一条同 id、`pending: false` 的更新。
+
 ### `VC_ERROR`
 
 错误信息。
@@ -377,6 +410,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 | `SCREENSHOT_TIMEOUT` | 父项目侧 RPC 超时（未收到 `VC_SCREENSHOT_RESULT`） |
 | `LOAD_NETWORK_ERROR` | 内层 iframe 网络/文档加载失败（见 `VC_LOAD_FAILED`） |
 | `CONSOLE_BAD_REQUEST` | `VC_CONSOLE_READ` 缺少 `id` |
+| `NETWORK_BAD_REQUEST` | `VC_NETWORK_READ` 缺少 `id` |
 
 ### `VC_CONSOLE_READ` / `VC_CONSOLE_READ_RESULT`
 
@@ -404,6 +438,49 @@ Service Worker 注册完成，bridge 可接收导航命令。
 ```
 
 **DevTools 式实时 UI**：监听 `VC_CONSOLE_UPDATED` → 用 `after: lastSeenId` 调 `VC_CONSOLE_READ` 增量追加。
+
+### `VC_NETWORK_READ` / `VC_NETWORK_READ_RESULT`
+
+拉取 SW 代理的网络请求历史。请求在 [`public/jsproxy-src/network-log.js`](../public/jsproxy-src/network-log.js) 于 `network.launch` / passthrough 路径记录，经 SW → bridge 缓冲，**每条独立 UUID**。
+
+```javascript
+// 父 → iframe
+// ['VC_NETWORK_READ', {
+//   id: 'req-1',
+//   after: 'uuid-last-seen',
+//   limit: 100
+// }]
+
+// iframe → 父
+// ['VC_NETWORK_READ_RESULT', {
+//   id: 'req-1',
+//   ok: true,
+//   value: {
+//     entries: [
+//       {
+//         id: 'uuid-1',
+//         ts: 1710000000000,
+//         method: 'GET',
+//         url: 'https://example.com/',
+//         status: 200,
+//         type: 'document',
+//         size: 1256,
+//         duration: 45,
+//         failed: false,
+//         bypass: false,
+//         pending: false
+//       },
+//     ],
+//     latestId: 'uuid-1'
+//   }
+// }]
+```
+
+entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）。
+
+v1 **不含** body / header / initiator。
+
+**DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。
 
 ### `VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`
 
@@ -542,8 +619,9 @@ function vcScreenshot(iframe, options = {}, { timeout = 60_000, targetOrigin = '
 4. 监听页面生命周期：`VC_NAVIGATING` / `VC_LOADING` / `VC_NAVIGATED` / `VC_LOAD_FAILED`
 5. 子页面内的**读信息、操作 DOM、等待逻辑**优先通过 `vcEval()`（Promise + 超时）执行
 6. Console：监听 `VC_CONSOLE_UPDATED`，用 `VC_CONSOLE_READ` + `after` UUID 增量拉取
-7. 截图：用 `vcScreenshot()` 获取子页面 Base64 图像（供 vision / 调试）
-8. 用户点击后退/前进/刷新时发送对应命令
+7. Network：监听 `VC_NETWORK_UPDATED`，用 `VC_NETWORK_READ` + `after` UUID 增量拉取
+8. 截图：用 `vcScreenshot()` 获取子页面 Base64 图像（供 vision / 调试）
+9. 用户点击后退/前进/刷新时发送对应命令
 
 ## 嵌入示例
 

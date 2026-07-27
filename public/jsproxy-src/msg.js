@@ -28,3 +28,4 @@ export const SW_SESSION_DESTROY = 300
 export const PAGE_BRIDGE_SESSION_DESTROY = 302
 export const PAGE_SESSION_LIST = 303
 export const SW_SESSION_LIST = 304
+export const SW_NETWORK_PUSH = 305

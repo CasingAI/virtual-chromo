@@ -65,23 +65,51 @@
       border: 0;
       background: #fff;
     }
-    #consolePanel {
-      width: 320px;
+    #devtoolsPanel {
+      width: 360px;
       border-left: 1px solid #0f3460;
       background: #0d1b2a;
       display: flex;
       flex-direction: column;
       min-height: 0;
     }
-    #consolePanel h2 {
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 12px;
-      font-weight: 600;
-      color: #94a3b8;
+    #devtoolsTabs {
+      display: flex;
       border-bottom: 1px solid #0f3460;
     }
-    #consoleList {
+    #devtoolsTabs button {
+      flex: 1;
+      padding: 8px 6px;
+      border: 0;
+      background: transparent;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #devtoolsTabs button.is-active {
+      color: #38bdf8;
+      box-shadow: inset 0 -2px 0 #38bdf8;
+    }
+    .devtools-pane {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .devtools-pane[hidden] {
+      display: none !important;
+    }
+    .devtools-pane h2 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748b;
+      border-bottom: 1px solid #0f3460;
+    }
+    #consoleList,
+    #networkList {
       flex: 1;
       overflow: auto;
       padding: 6px;
@@ -102,6 +130,33 @@
     .console-entry.level-error { border-left: 3px solid #ef4444; }
     .console-entry.level-info { border-left: 3px solid #38bdf8; }
     .console-entry.level-debug { border-left: 3px solid #64748b; }
+    .network-entry {
+      margin-bottom: 6px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: #16213e;
+      word-break: break-word;
+    }
+    .network-entry.is-failed { border-left: 3px solid #ef4444; }
+    .network-entry.is-bypass { border-left: 3px solid #f59e0b; }
+    .network-entry .meta {
+      color: #94a3b8;
+      margin-bottom: 2px;
+    }
+    .network-entry .url {
+      color: #cbd5e1;
+    }
+    .network-entry.is-selected {
+      outline: 1px solid #38bdf8;
+    }
+    .network-detail {
+      padding: 6px 8px;
+      font-size: 10px;
+      color: #94a3b8;
+      border-top: 1px solid #0f3460;
+      word-break: break-all;
+      min-height: 48px;
+    }
     #screenshotPanel {
       border-top: 1px solid #0f3460;
       padding: 8px;
@@ -158,9 +213,20 @@
         style="width:100%;height:50%;border-top:1px solid #0f3460"
       ></iframe>
     </div>
-    <aside id="consolePanel">
-      <h2>Console（VC_CONSOLE_UPDATED + READ）</h2>
-      <div id="consoleList"></div>
+    <aside id="devtoolsPanel">
+      <div id="devtoolsTabs">
+        <button type="button" class="is-active" data-tab="console">Console</button>
+        <button type="button" data-tab="network">Network</button>
+      </div>
+      <div class="devtools-pane" data-pane="console">
+        <h2>VC_CONSOLE_UPDATED + READ</h2>
+        <div id="consoleList"></div>
+      </div>
+      <div class="devtools-pane" data-pane="network" hidden>
+        <h2>VC_NETWORK_UPDATED + READ</h2>
+        <div id="networkList"></div>
+        <div id="networkDetail" class="network-detail">点击行查看完整 URL</div>
+      </div>
       <div id="screenshotPanel">
         <h3>Screenshot（VC_SCREENSHOT）</h3>
         <img id="screenshotPreview" alt="screenshot preview" hidden>
@@ -177,6 +243,9 @@
       const urlInput = document.getElementById('urlInput')
       const statusEl = document.getElementById('status')
       const consoleList = document.getElementById('consoleList')
+      const networkList = document.getElementById('networkList')
+      const networkDetail = document.getElementById('networkDetail')
+      const devtoolsTabs = document.getElementById('devtoolsTabs')
       const btnBack = document.getElementById('btnBack')
       const btnForward = document.getElementById('btnForward')
       const btnReload = document.getElementById('btnReload')
@@ -196,6 +265,8 @@
       let ready = false
       let currentUrl = ''
       let lastConsoleId = ''
+      let lastNetworkId = ''
+      let networkPullTimer = null
       let sessionId = 'default'
       const DEFAULT_RPC_TIMEOUT = 30000
 
@@ -262,6 +333,29 @@
         return vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', payload)
       }
 
+      function vcNetworkRead(after) {
+        const payload = {}
+        if (after) {
+          payload.after = after
+        }
+        return vcRpc('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', payload)
+      }
+
+      function formatBytes(n) {
+        if (!n) return '0'
+        if (n < 1024) return n + ' B'
+        return (n / 1024).toFixed(1) + ' KB'
+      }
+
+      function networkName(url) {
+        try {
+          const u = new URL(url)
+          return u.pathname === '/' ? u.host : u.pathname
+        } catch {
+          return url
+        }
+      }
+
       function vcScreenshot(options) {
         return vcRpc(
           'VC_SCREENSHOT_RESULT',
@@ -307,6 +401,89 @@
             console.error('[virtual-chromo console read]', err)
           })
       }
+
+      function appendNetworkEntries(entries) {
+        if (!entries || !entries.length) return
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i]
+          const el = document.createElement('div')
+          el.className = 'network-entry'
+          if (entry.failed) el.classList.add('is-failed')
+          if (entry.bypass) el.classList.add('is-bypass')
+          const meta = document.createElement('div')
+          meta.className = 'meta'
+          meta.textContent =
+            (entry.method || 'GET') +
+            ' ' +
+            (entry.status || '-') +
+            ' · ' +
+            (entry.type || '') +
+            ' · ' +
+            formatBytes(entry.size) +
+            ' · ' +
+            (entry.duration || 0) +
+            'ms' +
+            (entry.bypass ? ' · bypass' : '')
+          const body = document.createElement('div')
+          body.className = 'url'
+          body.textContent = networkName(entry.url || '')
+          el.appendChild(meta)
+          el.appendChild(body)
+          el.addEventListener('click', function () {
+            networkList.querySelectorAll('.network-entry.is-selected').forEach(function (n) {
+              n.classList.remove('is-selected')
+            })
+            el.classList.add('is-selected')
+            networkDetail.textContent = entry.url || ''
+          })
+          networkList.appendChild(el)
+          if (entry.id) {
+            lastNetworkId = entry.id
+          }
+        }
+        networkList.scrollTop = networkList.scrollHeight
+      }
+
+      function pullNetworkDelta() {
+        if (!ready) return Promise.resolve()
+        return vcNetworkRead(lastNetworkId)
+          .then(function (value) {
+            if (value && value.entries && value.entries.length) {
+              appendNetworkEntries(value.entries)
+            }
+            if (value && value.latestId) {
+              lastNetworkId = value.latestId
+            }
+          })
+          .catch(function (err) {
+            console.error('[virtual-chromo network read]', err)
+          })
+      }
+
+      function scheduleNetworkPull() {
+        if (networkPullTimer) {
+          clearTimeout(networkPullTimer)
+        }
+        networkPullTimer = setTimeout(function () {
+          networkPullTimer = null
+          pullNetworkDelta()
+        }, 50)
+      }
+
+      devtoolsTabs.addEventListener('click', function (event) {
+        const btn = event.target.closest('button[data-tab]')
+        if (!btn) return
+        const tab = btn.getAttribute('data-tab')
+        devtoolsTabs.querySelectorAll('button').forEach(function (b) {
+          b.classList.toggle('is-active', b === btn)
+        })
+        document.querySelectorAll('.devtools-pane').forEach(function (pane) {
+          pane.hidden = pane.getAttribute('data-pane') !== tab
+        })
+        if (tab === 'network') {
+          pullNetworkDelta()
+        }
+      })
 
       function setStatus(text) {
         statusEl.textContent = text
@@ -382,6 +559,9 @@
             break
           case 'VC_CONSOLE_UPDATED':
             pullConsoleDelta()
+            break
+          case 'VC_NETWORK_UPDATED':
+            scheduleNetworkPull()
             break
           case 'VC_CLICK':
             setStatus(

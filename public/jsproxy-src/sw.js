@@ -4,6 +4,7 @@ import * as urlx from './urlx.js'
 import * as util from './util.js'
 import * as cookie from './cookie.js'
 import * as network from './network.js'
+import * as networkLog from './network-log.js'
 import * as MSG from './msg.js'
 import * as jsfilter from './jsfilter.js'
 import * as inject from './inject.js'
@@ -50,25 +51,43 @@ function genPageId() {
   return ++pageCounter
 }
 
+/** Soft deadline if PAGE_INIT_BEG never arrives (e.g. no JS). */
+const PAGE_WAIT_SOFT_MS = 2000
+/** Hard deadline after PAGE_INIT_BEG — must never hang the HTML stream forever. */
+const PAGE_WAIT_HARD_MS = 8000
+
 /**
- * @param {number} pageId 
+ * @param {number} pageId
  */
 function pageWait(pageId) {
   const s = new Signal()
-  // 设置最大等待时间
-  // 有些页面不会执行 JS（例如查看源文件），导致永久等待
-  const timer = setTimeout(_ => {
-    pageWaitMap.delete(pageId)
-    s.notify(false)
-  }, 2000)
+  let settled = false
 
-  pageWaitMap.set(pageId, [s, timer])
+  /**
+   * @param {boolean} ok
+   */
+  function finish(ok) {
+    if (settled) {
+      return
+    }
+    settled = true
+    const arr = pageWaitMap.get(pageId)
+    if (arr) {
+      clearTimeout(arr[1])
+      pageWaitMap.delete(pageId)
+    }
+    s.notify(ok)
+  }
+
+  // 有些页面不会执行 JS（例如查看源文件），导致永久等待
+  const timer = setTimeout(() => finish(false), PAGE_WAIT_SOFT_MS)
+  pageWaitMap.set(pageId, [s, timer, finish])
   return s.wait()
 }
 
 /**
- * @param {number} id 
- * @param {boolean} isDone 
+ * @param {number} id
+ * @param {boolean} isDone
  */
 function pageNotify(id, isDone) {
   const arr = pageWaitMap.get(id)
@@ -76,14 +95,16 @@ function pageNotify(id, isDone) {
     console.warn('[jsproxy] unknown page id:', id)
     return
   }
-  const [s, timer] = arr
+  const [, timer, finish] = arr
   if (isDone) {
-    pageWaitMap.delete(id)
-    s.notify(true)
-  } else {
-    // 页面已开始初始化，关闭定时器
-    clearTimeout(timer)
+    finish(true)
+    return
   }
+  // PAGE_INIT_BEG: extend deadline, but never clear it entirely (nested iframe
+  // can miss SW_INFO_PUSH and would otherwise white-screen forever).
+  clearTimeout(timer)
+  const hardTimer = setTimeout(() => finish(false), PAGE_WAIT_HARD_MS)
+  pageWaitMap.set(id, [arr[0], hardTimer, finish])
 }
 
 
@@ -98,11 +119,12 @@ function makeHtmlRes(body, status = 200) {
 
 
 /**
- * @param {Response} res 
- * @param {ResponseInit} resOpt 
- * @param {URL} urlObj 
+ * @param {Response} res
+ * @param {ResponseInit} resOpt
+ * @param {URL} urlObj
+ * @param {(() => void)=} onReady
  */
-function processHtml(res, resOpt, urlObj) {
+function processHtml(res, resOpt, urlObj, onReady) {
   const reader = res.body.getReader()
   let injected = false
 
@@ -121,6 +143,9 @@ function processHtml(res, resOpt, urlObj) {
         if (!done) {
           console.warn('[jsproxy] page wait timeout. id: %d url: %s',
             pageId, urlObj.href)
+        }
+        if (onReady) {
+          onReady()
         }
       }
       const r = await reader.read()
@@ -147,8 +172,8 @@ function processJs(buf, charset) {
 
 
 /**
- * @param {*} cmd 
- * @param {*} msg 
+ * @param {*} cmd
+ * @param {*} msg
  * @param {string=} srcId
  * @param {string=} sessionId
  */
@@ -156,10 +181,10 @@ async function sendMsgToPages(cmd, msg, srcId, sessionId) {
   const pages = await clients.matchAll({type: 'window'})
   const sid = sessionId || session.getCurrentSessionId()
 
+  // Deliver to every window client in this session (viewer shell + nested
+  // content). Filtering to top-level broke cookie/storage sync and Network
+  // pushes when virtual-chromo is embedded as a nested iframe.
   for (const page of pages) {
-    if (page.frameType !== 'top-level') {
-      continue
-    }
     if (srcId && page.id === srcId) {
       continue
     }
@@ -242,10 +267,39 @@ function parseGatewayError(jsonStr, status, urlObj) {
  * @param {number} redirNum
  * @returns {Promise<Response>}
  */
-async function forward(req, urlObj, cliUrlObj, redirNum) {
+networkLog.setEmitter(function (entry) {
+  const sid = (entry && entry.sessionId) || session.getCurrentSessionId()
+  sendMsgToPages(MSG.SW_NETWORK_PUSH, entry, undefined, sid)
+})
+
+
+/**
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {URL} cliUrlObj
+ * @param {number} redirNum
+ * @param {string=} sessionId
+ * @returns {Promise<Response>}
+ */
+async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
+  const sid = sessionId || session.getCurrentSessionId()
   const isTurnstile = isPassthroughHost(urlObj.hostname)
+  const startMs = Date.now()
+  const entryId = networkLog.makeId()
+
+  networkLog.record(req, urlObj, null, startMs, {
+    pending: true,
+    id: entryId,
+    sessionId: sid,
+  })
+
   const r = await network.launch(req, urlObj, cliUrlObj)
   if (!r) {
+    networkLog.record(req, urlObj, null, startMs, {
+      failed: true,
+      id: entryId,
+      sessionId: sid,
+    })
     if (isTurnstile) {
       return new Response('load fail', {
         status: 502,
@@ -262,7 +316,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
   } = r
 
   if (cookies) {
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, session.getCurrentSessionId())
+    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, sid)
   }
 
   if (!status) {
@@ -276,8 +330,8 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
   }
 
   /**
-   * @param {string} k 
-   * @param {string} v 
+   * @param {string} k
+   * @param {string} v
    */
   const setHeader = (k, v) => {
     if (!headersMutable) {
@@ -290,6 +344,11 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
   // 网关错误
   const gwErr = headers.get('gateway-err--')
   if (gwErr) {
+    networkLog.record(req, urlObj, res, startMs, {
+      failed: true,
+      id: entryId,
+      sessionId: sid,
+    })
     return parseGatewayError(gwErr, status, urlObj)
   }
 
@@ -303,6 +362,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
       status === 205 ||
       status === 304
   ) {
+    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
     return new Response(null, resOpt)
   }
 
@@ -318,15 +378,17 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
     if (locObj) {
       // 跟随模式，返回最终数据
       if (req.redirect === 'follow') {
+        networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
         if (++redirNum === MAX_REDIR) {
           return makeHtmlRes('重定向过多', 500)
         }
-        return forward(req, locObj, cliUrlObj, redirNum)
+        return forward(req, locObj, cliUrlObj, redirNum, sid)
       }
       // 不跟随模式（例如页面跳转），返回 30X 状态
       setHeader('location', urlx.encUrlObj(locObj))
     }
 
+    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
     // firefox, safari 保留内容会提示页面损坏
     return new Response(null, resOpt)
   }
@@ -351,25 +413,36 @@ async function forward(req, urlObj, cliUrlObj, redirNum) {
     const ret = processJs(buf, charset)
 
     setHeader('content-type', 'text/javascript')
+    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
     return new Response(ret, resOpt)
   }
 
   if (req.mode === 'navigate' && mime === 'text/html') {
     if (isTurnstile) {
       applyTurnstileCorsHeaders(setHeader)
+      networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
       return new Response(res.body, resOpt)
     }
-    return processHtml(res, resOpt, urlObj)
+    // Keep Network entry pending until pageWait unblocks HTML body streaming.
+    return processHtml(res, resOpt, urlObj, () => {
+      networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
+    })
   }
 
   if (isTurnstile) {
     applyTurnstileCorsHeaders(setHeader)
   }
+  networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
   return new Response(res.body, resOpt)
 }
 
 
-async function proxy(e, urlObj) {
+/**
+ * @param {FetchEvent} e
+ * @param {URL} urlObj
+ * @param {string=} sessionId
+ */
+async function proxy(e, urlObj, sessionId) {
   // 使用 e.resultingClientId 有问题
   const id = e.clientId
   let cliUrlStr
@@ -380,9 +453,10 @@ async function proxy(e, urlObj) {
     cliUrlStr = urlObj.href
   }
   const cliUrlObj = new URL(cliUrlStr)
+  const sid = sessionId || session.getCurrentSessionId()
 
   try {
-    return await forward(e.request, urlObj, cliUrlObj, 0)
+    return await forward(e.request, urlObj, cliUrlObj, 0, sid)
   } catch (err) {
     console.error(err)
     return makeHtmlRes('前端脚本错误<br><pre>' + err.stack + '</pre>', 500)
@@ -507,7 +581,7 @@ function applyTurnstileCorsHeaders(setHeader) {
  * @param {string} urlStr
  * @param {string} targetUrlStr
  */
-function passthroughFetch(req, urlStr, targetUrlStr) {
+function passthroughFetchRaw(req, urlStr, targetUrlStr) {
   if (urlStr === targetUrlStr) {
     return fetch(req)
   }
@@ -532,6 +606,43 @@ function passthroughFetch(req, urlStr, targetUrlStr) {
     init.body = req.body
   }
   return fetch(targetUrlStr, init)
+}
+
+
+/**
+ * @param {Request} req
+ * @param {string} urlStr
+ * @param {string} targetUrlStr
+ */
+async function passthroughFetch(req, urlStr, targetUrlStr) {
+  const urlObj = urlx.newUrl(targetUrlStr) || new URL(targetUrlStr)
+  const sid = session.getCurrentSessionId()
+  const startMs = Date.now()
+  const entryId = networkLog.makeId()
+  networkLog.record(req, urlObj, null, startMs, {
+    pending: true,
+    bypass: true,
+    id: entryId,
+    sessionId: sid,
+  })
+  let res
+  try {
+    res = await passthroughFetchRaw(req, urlStr, targetUrlStr)
+  } catch (err) {
+    networkLog.record(req, urlObj, null, startMs, {
+      failed: true,
+      bypass: true,
+      id: entryId,
+      sessionId: sid,
+    })
+    throw err
+  }
+  networkLog.record(req, urlObj, res, startMs, {
+    bypass: true,
+    id: entryId,
+    sessionId: sid,
+  })
+  return res
 }
 
 
@@ -670,7 +781,7 @@ async function onFetch(e) {
   const targetUrlObj = urlx.newUrl(targetUrlStr)
 
   if (targetUrlObj) {
-    return proxy(e, targetUrlObj)
+    return proxy(e, targetUrlObj, parsed.sessionId)
   }
   return makeHtmlRes('invalid url: ' + targetUrlStr, 500)
 }
