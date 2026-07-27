@@ -555,15 +555,18 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
   const scriptProto = win['HTMLScriptElement'].prototype
   const linkProto = win['HTMLLinkElement'].prototype
+  const imgProto = win['HTMLImageElement'].prototype
+  const sourceProto = win['HTMLSourceElement'] && win['HTMLSourceElement'].prototype
 
-  // 防止混合内容
-  if (oriUrlObj.protocol === 'http:') {
-    hookAttr('SCRIPT', scriptProto, 'src')
-    hookAttr('LINK', linkProto, 'href')
+  // Always rewrite asset URLs through the proxy. The old `http:`-only guard was for
+  // mixed-content when the proxy is HTTPS and the site is HTTP; for HTTPS sites it
+  // left <script>/<link>/<img> on the real origin, so SW Network saw almost nothing.
+  hookAttr('SCRIPT', scriptProto, 'src')
+  hookAttr('LINK', linkProto, 'href')
+  hookAttr('IMG', imgProto, 'src')
+  if (sourceProto) {
+    hookAttr('SOURCE', sourceProto, 'src')
   }
-
-  // const imgProto = win.HTMLImageElement.prototype
-  // hookAttr('IMG', imgProto, 'src')
 
   const embedProto = win['HTMLEmbedElement'].prototype
   hookAttr('EMBED', embedProto, 'src')
