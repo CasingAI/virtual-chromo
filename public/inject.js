@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260727-v23'
+  var VC_BUILD = '20260727-v26'
 
   if (window.__vcInjected) {
     return
@@ -228,6 +228,37 @@
     true,
   )
 
+  function buildFormSubmitUrl(form) {
+    var action = ''
+    try {
+      action = form.action || location.href
+    } catch (err) {
+      action = location.href
+    }
+    var method = String(form.method || 'get').toLowerCase()
+    if (method !== 'get') {
+      return action
+    }
+    try {
+      var url = new URL(action, location.href)
+      var params = new URLSearchParams()
+      var fd = new FormData(form)
+      fd.forEach(function (value, key) {
+        if (!key) {
+          return
+        }
+        if (typeof value === 'string') {
+          params.append(key, value)
+        }
+      })
+      var qs = params.toString()
+      url.search = qs ? '?' + qs : ''
+      return url.href
+    } catch (err2) {
+      return action
+    }
+  }
+
   document.addEventListener(
     'submit',
     function (event) {
@@ -236,16 +267,10 @@
         return
       }
       event.preventDefault()
-      var action = ''
-      try {
-        action = form.action || location.href
-      } catch {
-        action = ''
-      }
       forwardInject('LOCATION', {
         ts: Date.now(),
         method: 'submit',
-        url: action,
+        url: buildFormSubmitUrl(form),
       })
     },
     true,

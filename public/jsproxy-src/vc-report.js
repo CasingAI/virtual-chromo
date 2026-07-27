@@ -91,6 +91,49 @@ export function reportLocation(payload) {
 }
 
 /**
+ * Build the URL a GET form would navigate to (action + successful controls).
+ * POST forms still return the action URL only (body not representable in VC_LOCATION).
+ * @param {HTMLFormElement} form
+ * @param {string=} fallbackHref
+ */
+export function buildFormSubmitUrl(form, fallbackHref) {
+  let action = ''
+  try {
+    action = form.action || fallbackHref || ''
+  } catch {
+    action = fallbackHref || ''
+  }
+  if (!action) {
+    return ''
+  }
+
+  const method = String(form.method || 'get').toLowerCase()
+  if (method !== 'get') {
+    return action
+  }
+
+  try {
+    const url = new URL(action, fallbackHref || action)
+    const params = new URLSearchParams()
+    const fd = new FormData(form)
+    fd.forEach((value, key) => {
+      if (!key) {
+        return
+      }
+      if (typeof value === 'string') {
+        params.append(key, value)
+      }
+      // File values are not representable in a GET query; skip
+    })
+    const qs = params.toString()
+    url.search = qs ? '?' + qs : ''
+    return url.href
+  } catch {
+    return action
+  }
+}
+
+/**
  * @param {Record<string, unknown>} payload
  */
 export function reportHistory(payload) {

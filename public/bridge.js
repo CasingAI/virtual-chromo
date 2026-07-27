@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v23'
+  const BUILD = '20260727-v26'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -1515,7 +1515,11 @@
    * @param {string} url
    */
   function toProxyPath(url) {
-    const normalized = url.replace(/^https?:\/\//i, 'https://')
+    // Encode ?/# so they stay in pathname (browser otherwise steals them as proxy search/hash).
+    const normalized = url
+      .replace(/^https?:\/\//i, 'https://')
+      .replace(/\?/g, '%3F')
+      .replace(/#/g, '%23')
     if (sessionId === 'default') {
       return PROXY_PREFIX + normalized
     }
@@ -1543,10 +1547,11 @@
     if (!stripped) {
       return ''
     }
-    if (/^https?:\/\//i.test(stripped)) {
-      return stripped
+    let target = stripped
+    if (!/^https?:\/\//i.test(target)) {
+      target = 'https://' + target
     }
-    return 'https://' + stripped
+    return target.replace(/%3F/gi, '?').replace(/%23/gi, '#')
   }
 
   /**

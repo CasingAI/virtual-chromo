@@ -665,10 +665,17 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     } catch {
       action = this.action || ''
     }
+    const submitUrl = vcReport.buildFormSubmitUrl(this, action || location.href)
+    let url = submitUrl || action
+    try {
+      url = urlx.decUrlStrRel(url, this)
+    } catch {
+      // keep submitUrl/action
+    }
     vcReport.reportLocation({
       ts: Date.now(),
       method: 'submit',
-      url: action,
+      url,
     })
   })
   

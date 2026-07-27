@@ -392,31 +392,49 @@ async function proxy(e, urlObj) {
 /** @type {Database} */
 let mDB
 
-async function initDB() {
-  mDB = new Database('.sys')
-  await mDB.open({
-    'url-cache': {
-      keyPath: 'url'
-    },
-    'cookie': {
-      keyPath: 'id'
-    },
-    'web-storage': {
-      keyPath: 'id'
-    }
-  })
+/** @type {Promise<void>|null} */
+let mDBInit = null
 
-  await network.setDB(mDB)
-  await cookie.setDB(mDB)
-  await sessionStorage.setDB(mDB)
+/**
+ * Serialize IDB open across concurrent fetch events.
+ * Assigning mDB before await open() used to let later fetches skip init while
+ * network/cookie still had no DB → TypeError: Cannot read properties of undefined (reading 'get').
+ */
+function initDB() {
+  if (mDBInit) {
+    return mDBInit
+  }
+  mDBInit = (async () => {
+    const db = new Database('.sys')
+    await db.open({
+      'url-cache': {
+        keyPath: 'url'
+      },
+      'cookie': {
+        keyPath: 'id'
+      },
+      'web-storage': {
+        keyPath: 'id'
+      }
+    })
 
-  session.setDestroyHandler(async sessionId => {
-    await cookie.destroySession(sessionId)
-    await sessionStorage.destroySession(sessionId)
-    await network.destroySessionCache(sessionId)
-    sendMsgToPages(MSG.SW_SESSION_DESTROY, { sessionId }, undefined, sessionId)
+    mDB = db
+    await network.setDB(mDB)
+    await cookie.setDB(mDB)
+    await sessionStorage.setDB(mDB)
+
+    session.setDestroyHandler(async sessionId => {
+      await cookie.destroySession(sessionId)
+      await sessionStorage.destroySession(sessionId)
+      await network.destroySessionCache(sessionId)
+      sendMsgToPages(MSG.SW_SESSION_DESTROY, { sessionId }, undefined, sessionId)
+    })
+    session.startIdleGc()
+  })().catch(err => {
+    mDBInit = null
+    throw err
   })
-  session.startIdleGc()
+  return mDBInit
 }
 
 
@@ -550,9 +568,7 @@ async function onFetch(e) {
   if (!mConf) {
     await initConf()
   }
-  if (!mDB) {
-    await initDB()
-  }
+  await initDB()
   const req = e.request
   const urlStr = urlx.delHash(req.url)
   const parsed = session.parseSessionFromUrl(urlStr)

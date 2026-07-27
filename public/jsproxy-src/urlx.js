@@ -11,6 +11,23 @@ const ROOT_LEN = path.ROOT.length
 const PROXY_MARKER = '/-----'
 
 /**
+ * Keep target ?/# inside the proxy pathname. Otherwise the browser treats them as
+ * the Worker URL's own search/hash and decUrlObj(pathname) drops them — e.g.
+ * /-----https://duckduckgo.com/?q=x  →  fetches https://duckduckgo.com/
+ * @param {string} url
+ */
+export function encodeProxyTarget(url) {
+  return String(url).replace(/\?/g, '%3F').replace(/#/g, '%23')
+}
+
+/**
+ * @param {string} raw target slice after /-----
+ */
+export function decodeProxyTarget(raw) {
+  return String(raw).replace(/%3F/gi, '?').replace(/%23/gi, '#')
+}
+
+/**
  * @param {string} url 
  */
 export function isHttpProto(url) {
@@ -143,11 +160,12 @@ export function encUrlObj(urlObj, sessionId) {
     return fullUrl
   }
   const sid = sessionId || session.getCurrentSessionId()
+  const embedded = encodeProxyTarget(fullUrl)
 
   // Page context: path.PREFIX already includes /s/{sessionId}/ from real location.
   // Do NOT use urlObj.origin (target site) — that produced google.com/-----https://...
   if (!sessionId && !env.isSwEnv() && PREFIX) {
-    return PREFIX + fullUrl
+    return PREFIX + embedded
   }
 
   let proxyOrigin = ''
@@ -165,7 +183,7 @@ export function encUrlObj(urlObj, sessionId) {
       proxyOrigin = ''
     }
   }
-  return session.getProxyPrefix(proxyOrigin, sid) + fullUrl
+  return session.getProxyPrefix(proxyOrigin, sid) + embedded
 }
 
 const IS_SW = env.isSwEnv()
@@ -213,16 +231,29 @@ export function encUrlStrAbs(url) {
  */
 export function decUrlObj(urlObj) {
   const fullUrl = urlObj.href
+  let target = ''
   if (fullUrl.startsWith(PREFIX)) {
-    return fullUrl.substr(PREFIX_LEN)
+    target = fullUrl.substr(PREFIX_LEN)
+  } else {
+    const parsed = session.parseSessionFromUrl(fullUrl)
+    session.setCurrentSessionId(parsed.sessionId)
+    const idx = parsed.restPath.indexOf(PROXY_MARKER)
+    if (idx === -1) {
+      return fullUrl
+    }
+    target = parsed.restPath.substr(idx + PROXY_MARKER.length)
   }
-  const parsed = session.parseSessionFromUrl(fullUrl)
-  session.setCurrentSessionId(parsed.sessionId)
-  const idx = parsed.restPath.indexOf(PROXY_MARKER)
-  if (idx === -1) {
-    return fullUrl
+
+  target = decodeProxyTarget(target)
+
+  // Legacy / unescaped embeds: browser moved ?query onto the proxy URL.
+  if (urlObj.search && target.indexOf('?') === -1) {
+    target += urlObj.search
   }
-  return parsed.restPath.substr(idx + PROXY_MARKER.length)
+  if (urlObj.hash && target.indexOf('#') === -1) {
+    target += urlObj.hash
+  }
+  return target
 }
 
 

@@ -50,6 +50,9 @@ function cacheKey(url) {
  * @param {string} url 
  */
 function getUrlCache(url) {
+  if (!mDB) {
+    return Promise.resolve(undefined)
+  }
   return mDB.get('url-cache', cacheKey(url))
 }
 
@@ -61,6 +64,9 @@ function getUrlCache(url) {
  * @param {number} expires 
  */
 async function setUrlCache(url, host, info, expires) {
+  if (!mDB) {
+    return
+  }
   const key = cacheKey(url)
   await mDB.put('url-cache', {
     url: key,
@@ -77,6 +83,9 @@ async function setUrlCache(url, host, info, expires) {
  * @param {string} url 
  */
 async function delUrlCache(url) {
+  if (!mDB) {
+    return
+  }
   await mDB.delete('url-cache', cacheKey(url))
 }
 
