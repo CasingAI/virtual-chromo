@@ -124,9 +124,10 @@ function makeHtmlRes(body, status = 200) {
  * @param {URL} urlObj
  * @param {(() => void)=} onReady
  */
-function processHtml(res, resOpt, urlObj, onReady) {
+function processHtml(res, resOpt, urlObj, onReady, onComplete) {
   const reader = res.body.getReader()
   let injected = false
+  let size = 0
 
   const stream = new ReadableStream({
     async pull(controller) {
@@ -136,6 +137,7 @@ function processHtml(res, resOpt, urlObj, onReady) {
         // 注入页面顶部的代码
         const pageId = genPageId()
         const buf = inject.getHtmlCode(urlObj, pageId)
+        size += buf.byteLength
         controller.enqueue(buf)
 
         // 留一些时间给页面做异步初始化
@@ -150,8 +152,12 @@ function processHtml(res, resOpt, urlObj, onReady) {
       }
       const r = await reader.read()
       if (r.done) {
+        if (onComplete) {
+          onComplete(size)
+        }
         controller.close()
       } else {
+        size += r.value.byteLength
         controller.enqueue(r.value)
       }
     }
@@ -355,6 +361,31 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
   /** @type {ResponseInit} */
   const resOpt = {status, headers}
 
+  /**
+   * @param {{ size?: number, failed?: boolean }} [extra]
+   */
+  const finishEntry = (extra) => {
+    networkLog.record(req, urlObj, res, startMs, {
+      id: entryId,
+      sessionId: sid,
+      ...(extra || {}),
+    })
+  }
+
+  /**
+   * Count bytes actually streamed to the browser; upsert size when complete.
+   * @param {ReadableStream|null|undefined} body
+   * @returns {ReadableStream|null|undefined}
+   */
+  const bodyWithSize = (body) => {
+    if (!body) {
+      return body
+    }
+    return networkLog.tapBodySize(body, (size) => {
+      finishEntry({ size })
+    })
+  }
+
   // 空响应
   // https://fetch.spec.whatwg.org/#statuses
   if (status === 101 ||
@@ -362,7 +393,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
       status === 205 ||
       status === 304
   ) {
-    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
+    finishEntry({ size: 0 })
     return new Response(null, resOpt)
   }
 
@@ -378,7 +409,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
     if (locObj) {
       // 跟随模式，返回最终数据
       if (req.redirect === 'follow') {
-        networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
+        finishEntry({ size: 0 })
         if (++redirNum === MAX_REDIR) {
           return makeHtmlRes('重定向过多', 500)
         }
@@ -388,7 +419,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
       setHeader('location', urlx.encUrlObj(locObj))
     }
 
-    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
+    finishEntry({ size: 0 })
     // firefox, safari 保留内容会提示页面损坏
     return new Response(null, resOpt)
   }
@@ -413,27 +444,36 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
     const ret = processJs(buf, charset)
 
     setHeader('content-type', 'text/javascript')
-    networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
+    finishEntry({ size: ret.byteLength })
     return new Response(ret, resOpt)
   }
 
   if (req.mode === 'navigate' && mime === 'text/html') {
     if (isTurnstile) {
       applyTurnstileCorsHeaders(setHeader)
-      networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
-      return new Response(res.body, resOpt)
+      finishEntry()
+      return new Response(bodyWithSize(res.body), resOpt)
     }
     // Keep Network entry pending until pageWait unblocks HTML body streaming.
-    return processHtml(res, resOpt, urlObj, () => {
-      networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
-    })
+    // Size is refined once the full HTML stream is consumed.
+    return processHtml(
+      res,
+      resOpt,
+      urlObj,
+      () => {
+        finishEntry()
+      },
+      (size) => {
+        finishEntry({ size })
+      },
+    )
   }
 
   if (isTurnstile) {
     applyTurnstileCorsHeaders(setHeader)
   }
-  networkLog.record(req, urlObj, res, startMs, { id: entryId, sessionId: sid })
-  return new Response(res.body, resOpt)
+  finishEntry()
+  return new Response(bodyWithSize(res.body), resOpt)
 }
 
 
@@ -637,12 +677,33 @@ async function passthroughFetch(req, urlStr, targetUrlStr) {
     })
     throw err
   }
-  networkLog.record(req, urlObj, res, startMs, {
-    bypass: true,
-    id: entryId,
-    sessionId: sid,
+
+  /**
+   * @param {{ size?: number }} [extra]
+   */
+  const finishEntry = (extra) => {
+    networkLog.record(req, urlObj, res, startMs, {
+      bypass: true,
+      id: entryId,
+      sessionId: sid,
+      ...(extra || {}),
+    })
+  }
+
+  if (!res.body) {
+    finishEntry({ size: 0 })
+    return res
+  }
+
+  finishEntry()
+  const body = networkLog.tapBodySize(res.body, (size) => {
+    finishEntry({ size })
   })
-  return res
+  return new Response(body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  })
 }
 
 

@@ -20,6 +20,64 @@ export function makeId() {
 }
 
 /**
+ * Wrap a body stream and count transferred bytes.
+ * Calls onSize once when the stream completes or is cancelled.
+ *
+ * @param {ReadableStream|null|undefined} body
+ * @param {(size: number) => void} onSize
+ * @returns {ReadableStream|null}
+ */
+export function tapBodySize(body, onSize) {
+  if (!body) {
+    try {
+      onSize(0)
+    } catch {
+      // ignore
+    }
+    return null
+  }
+
+  let size = 0
+  let reported = false
+  const report = () => {
+    if (reported) {
+      return
+    }
+    reported = true
+    try {
+      onSize(size)
+    } catch {
+      // ignore
+    }
+  }
+
+  const reader = body.getReader()
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          report()
+          controller.close()
+          return
+        }
+        if (value) {
+          size += value.byteLength
+        }
+        controller.enqueue(value)
+      } catch (err) {
+        report()
+        controller.error(err)
+      }
+    },
+    cancel(reason) {
+      report()
+      return reader.cancel(reason)
+    },
+  })
+}
+
+/**
  * @param {Request} req
  * @param {URL} urlObj
  * @param {Response|null|undefined} res
@@ -30,6 +88,7 @@ export function makeId() {
  *   pending?: boolean,
  *   id?: string,
  *   sessionId?: string,
+ *   size?: number,
  * }} [meta]
  */
 export function record(req, urlObj, res, startMs, meta) {
@@ -39,16 +98,7 @@ export function record(req, urlObj, res, startMs, meta) {
 
   const pending = !!(meta && meta.pending)
   const status = res ? res.status || 0 : 0
-  let size = 0
-  if (res && res.headers) {
-    const cl = res.headers.get('content-length')
-    if (cl) {
-      const n = parseInt(cl, 10)
-      if (!isNaN(n)) {
-        size = n
-      }
-    }
-  }
+  const size = meta && typeof meta.size === 'number' && meta.size >= 0 ? meta.size : 0
 
   const failed = !pending && ((meta && meta.failed) || !res || status >= 400)
 
