@@ -109,7 +109,7 @@
     <button id="btnBack" type="button" title="后退">←</button>
     <button id="btnForward" type="button" title="前进">→</button>
     <button id="btnReload" type="button" title="刷新">↻</button>
-    <input id="urlInput" type="text" placeholder="输入 URL 后按 Enter" spellcheck="false">
+    <input id="urlInput" type="text" value="https://example.com" placeholder="输入 URL 后按 Enter" spellcheck="false">
     <button id="btnGo" type="button">前往</button>
     <button id="btnEval" type="button" title="在子页面执行 document.title">Eval</button>
     <button id="btnLog" type="button" title="在子页面 console.log">Log</button>
@@ -273,8 +273,13 @@
         switch (cmd) {
           case 'VC_READY':
             ready = true
-            setStatus('已就绪 v' + (payload && payload.version || '?') + ' build ' + (payload && payload.build || '?'))
-            navigate('https://example.com')
+            setStatus(
+              '已就绪 v' +
+                (payload && payload.version || '?') +
+                ' build ' +
+                (payload && payload.build || '?') +
+                ' — 输入 URL 后按 Enter 或点「前往」',
+            )
             break
           case 'VC_NAVIGATING':
             setStatus('即将加载 ' + (payload && payload.url || ''))

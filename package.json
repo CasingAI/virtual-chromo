@@ -3,9 +3,14 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "format:bundle": "npx --yes js-beautify -o public/bundle.formatted.js public/bundle.js",
+    "reconstruct:bundle": "node scripts/reconstruct-bundle.js",
+    "build:bundle": "webpack --config webpack.config.js"
   },
   "devDependencies": {
+    "webpack": "^5.109.0",
+    "webpack-cli": "^7.2.1",
     "wrangler": "^3.99.0"
   }
 }

@@ -37,7 +37,25 @@ npm run dev
 
 Worker 默认运行在 `http://localhost:8787`。
 
-### 本地测试父项目 Demo
+### 用源码构建 bundle 做功能测试
+
+`bundle.reconstructed.js` **不能直接运行**（ES modules 拼接版，仅供阅读）。要实际替换运行时 bundle：
+
+```bash
+npm run build:bundle          # 从 public/jsproxy-src 打包 → public/bundle.built.js
+```
+
+在 `public/sw.js` 里切换一行：
+
+```javascript
+const VC_BUNDLE = 'bundle.built.js'  // 测试自研构建
+// const VC_BUNDLE = 'bundle.js'     // 默认：上游压缩版
+```
+
+改 bundle 后 bump `VC_BUILD`（`sw.js` 与 `conf.js` 同步），硬刷新或清 SW 缓存后再测。
+
+本地已验证：`bundle.built.js` 可正常代理 example.com（导航 + 页面渲染）。
+
 
 父项目必须与 Worker **不同源**（否则 Service Worker 会接管整个域名）。推荐：
 

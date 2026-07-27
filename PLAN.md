@@ -175,7 +175,13 @@ await page.evaluate(() => document.querySelector('#login')?.click())
 
 ### 阶段 3：替换 jsproxy 压缩 bundle
 
-`public/bundle.js` 为 jsproxy 编译产物，无法维护。逐步用可读源码替换：
+`public/bundle.js` 为 jsproxy 编译产物，无法维护。分析时可按层次选用：
+
+- [`bundle.formatted.js`](public/bundle.formatted.js) — 压缩 bundle 的 beautify 版（与运行时逻辑 1:1，带行号）
+- [`bundle.reconstructed.js`](public/bundle.reconstructed.js) — 从 [jsproxy-browser 源码](https://github.com/EtherDream/jsproxy-browser) 还原的可读版（原始变量名 + 模块注释；含 virtual-chromo 的 `index.vc.js`）
+- [`jsproxy-src/`](public/jsproxy-src/) — 分文件源码副本
+
+更新 bundle 后：`npm run format:bundle` / `npm run reconstruct:bundle`。逐步用可读源码替换：
 
 ```
 public/inject.js         # 已实现：代理 HTML 注入（console、dialog noop）

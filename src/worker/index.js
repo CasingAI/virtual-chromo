@@ -97,6 +97,7 @@ async function fetchHandler(request, env) {
     case '/inject.js':
     case '/sw.js':
     case '/bundle.js':
+    case '/bundle.built.js':
     case '/conf.js':
       return withNoStore(await env.ASSETS.fetch(request))
     default:
