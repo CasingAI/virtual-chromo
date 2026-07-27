@@ -23,6 +23,10 @@
 - **Worker**（`src/worker/index.js`）：`/http/` 代理 API + `public/` 静态资源
 - **viewer.html**：iframe 外壳，注册 Service Worker，内层 `#content` iframe 加载代理页面
 - **bridge.js**：与父项目的 postMessage 协议（见 [docs/protocol.md](docs/protocol.md)）
+- **bundle.js**：jsproxy 压缩核心（Service Worker 运行时加载）
+  - [bundle.formatted.js](public/bundle.formatted.js) — beautify 副本（`npm run format:bundle`）
+  - [bundle.reconstructed.js](public/bundle.reconstructed.js) — 还原可读源码（变量名、模块结构；`npm run reconstruct:bundle`）
+  - [jsproxy-src/](public/jsproxy-src/) — 分文件源码 + virtual-chromo 定制说明
 
 ## 开发
 
@@ -79,3 +83,7 @@ iframe.contentWindow.postMessage(['VC_NAVIGATE', { url: 'https://example.com' }]
 - 首次打开 iframe 入口（`/`）会安装 Service Worker 并自动刷新一次
 - 父项目页面不要与 Worker 部署在同一域名根路径下
 - 继承 jsproxy CF Worker 版限制：无 WebSocket 代理、无外链白名单
+
+## License
+
+本项目采用 [MIT](LICENSE) 许可证。核心代理代码来自 [EtherDream/jsproxy](https://github.com/EtherDream/jsproxy) 与 [jsproxy-browser](https://github.com/EtherDream/jsproxy-browser)（同为 MIT），归属说明见 [THIRD-PARTY.md](THIRD-PARTY.md)。
