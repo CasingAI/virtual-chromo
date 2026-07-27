@@ -66,6 +66,7 @@ flowchart TB
 - [x] `public/inject.js`：代理 HTML 注入（console hook、dialog noop）
 - [x] `VC_LOAD_FAILED`、Console（`VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`）
 - [x] 协议文档（[docs/protocol.md](docs/protocol.md)）与父项目 Demo（[docs/parent-demo.html](docs/parent-demo.html)）
+- [x] **被动导航**（build `20260727-v15`+）：子页点击 / 改 location 只上报 `VC_CLICK` / `VC_LOCATION`，不自主换页；唯一换页入口为父级 `VC_NAVIGATE`
 
 ### 进行中 / 待验证
 
@@ -90,7 +91,7 @@ flowchart TB
 | 4 | `VC_RELOAD` | 命令 | `page.reload()` | 已有 | `必须` · `已有` |
 | 5 | `VC_PING` | 命令 | — | 已有 | `可选` · `已有` |
 | 6 | `VC_EVAL` | 命令 | `page.evaluate()` | 已有 | `核心` · `必须` · `已有` |
-| 7 | `VC_CLICK` | 命令 | `page.click()` | 计划 | `可不实现` |
+| 7 | `VC_CLICK` | 事件 | 子页点击上报 | 已有 | `建议保留` · `已有` |
 | 8 | `VC_FILL` | 命令 | `page.fill()` | 计划 | `可不实现` |
 | 9 | `VC_QUERY` | 命令 | 读 DOM | 计划 | `可不实现` |
 | 10 | `VC_WAIT_FOR` | 命令 | `page.waitForSelector()` | 计划 | `可不实现` |
@@ -116,6 +117,7 @@ flowchart TB
 | 30 | `VC_SCROLL_RESULT` | RPC 响应 | — | 计划 | `可不实现` · `随#13` |
 | 31 | `VC_CONSOLE_READ_RESULT` | RPC 响应 | — | 已有 | `建议保留` · `随#21` · `已有` |
 | 32 | `VC_LOAD_FAILED` | 事件 | 加载失败 | 已有 | `建议保留` · `已有` |
+| 33 | `VC_LOCATION` | 事件 | 子页改 location 上报 | 已有 | `建议保留` · `已有` |
 
 **页面生命周期**（#15 / #17 / #16 / #32 分工，避免只靠 boolean）：
 
@@ -208,9 +210,10 @@ src/client/
 ## 设计原则
 
 1. **跨源边界**：父项目永远不碰子页面 DOM，只走协议
-2. **viewer 外壳不导航**：外层 shell 只负责 SW + bridge，内层 iframe 才加载代理页
-3. **父项目不同源**：父页面不得与 Worker 同域，否则 SW 接管整个站点
-4. **可维护优先**：新能力写在 `bridge.js` 与将来的 `src/client/`，不修改压缩 bundle
+2. **被动 WebView**：子页面不能自主导航或开真 tab；点击 / location 变更只上报，由父级决定是否 `VC_NAVIGATE`
+3. **viewer 外壳不导航**：外层 shell 只负责 SW + bridge，内层 iframe 才加载代理页
+4. **父项目不同源**：父页面不得与 Worker 同域，否则 SW 接管整个站点
+5. **可维护优先**：新能力写在 `bridge.js`、`inject.js` 与 `jsproxy-src/`，经 webpack 产出 `bundle.built.js`
 
 ## 已知限制（继承自 jsproxy）
 
@@ -223,6 +226,6 @@ src/client/
 ## 相关文档
 
 - [docs/protocol.md](docs/protocol.md) — postMessage 协议
-- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — 已知问题（click、inject、console 等）
+- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — 已知问题（被动导航、inject、console 等）
 - [docs/parent-demo.html](docs/parent-demo.html) — 父项目接入示例
 - [README.md](README.md) — 开发与部署

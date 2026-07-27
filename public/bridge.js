@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v14'
+  const BUILD = '20260727-v15'
   const PROXY_PREFIX = '/-----'
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
@@ -648,6 +648,8 @@
     }
 
     window.__vcOnInjectConsole = ingestInjectConsoleEntry
+    window.__vcOnInjectClick = ingestInjectClick
+    window.__vcOnInjectLocation = ingestInjectLocation
 
     window.addEventListener('message', onParentMessage)
     window.addEventListener('message', onInjectMessage)
@@ -960,6 +962,45 @@
   }
 
   /**
+   * @param {unknown} payload
+   */
+  function ingestInjectClick(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+    const data = /** @type {{ ts?: number, tagName?: string, href?: string, target?: string, text?: string, id?: string, className?: string }} */ (
+      payload
+    )
+    postToParent('VC_CLICK', {
+      ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+      tagName: typeof data.tagName === 'string' ? data.tagName : '',
+      href: typeof data.href === 'string' ? data.href : undefined,
+      target: typeof data.target === 'string' ? data.target : undefined,
+      text: typeof data.text === 'string' ? data.text : undefined,
+      id: typeof data.id === 'string' ? data.id : undefined,
+      className: typeof data.className === 'string' ? data.className : undefined,
+    })
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function ingestInjectLocation(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+    const data = /** @type {{ ts?: number, method?: string, url?: string, target?: string }} */ (
+      payload
+    )
+    postToParent('VC_LOCATION', {
+      ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+      method: typeof data.method === 'string' ? data.method : 'unknown',
+      url: typeof data.url === 'string' ? data.url : '',
+      target: typeof data.target === 'string' ? data.target : undefined,
+    })
+  }
+
+  /**
    * @param {MessageEvent} event
    */
   function onInjectMessage(event) {
@@ -972,11 +1013,17 @@
 
     const kind = event.data[1]
     const payload = event.data[2]
-    if (kind !== 'CONSOLE') {
+    if (kind === 'CONSOLE') {
+      ingestInjectConsoleEntry(payload)
       return
     }
-
-    ingestInjectConsoleEntry(payload)
+    if (kind === 'CLICK') {
+      ingestInjectClick(payload)
+      return
+    }
+    if (kind === 'LOCATION') {
+      ingestInjectLocation(payload)
+    }
   }
 
   function ensureConsoleHook() {

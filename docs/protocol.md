@@ -87,7 +87,7 @@ iframe.contentWindow.postMessage(['VC_EVAL', {
 | 读元素文本 | `document.querySelector('h1')?.textContent` | — |
 | 批量采集 | `[...document.querySelectorAll('a')].map(a => ({ href: a.href, text: a.textContent }))` | — |
 | 读表单状态 | `document.querySelector('#email')?.value` | — |
-| 点击 | — | `document.querySelector('a')?.click()`（需 `bundle.built.js` v14+；旧 bundle 见 KNOWN-ISSUES） |
+| 点击 | — | 监听 `VC_CLICK`；导航由父级发 `VC_NAVIGATE`（子页不自主跳转） |
 | 填表 | — | `const el = document.querySelector('#email'); el.value = 'a@b.c'; el.dispatchEvent(new Event('input', { bubbles: true }))` |
 | 等待元素 | `new Promise(r => { const t = setInterval(() => { if (document.querySelector('.ready')) { clearInterval(t); r(true) } }, 100) })` | — |
 
@@ -96,7 +96,7 @@ iframe.contentWindow.postMessage(['VC_EVAL', {
 - **Eval-first**：子页面内能写成 JS 的事，都用 `VC_EVAL`；不必等或依赖 `VC_CLICK` / `VC_FILL` / `VC_QUERY` 等语义 API。
 - **语义 API 是可选糖**：上述命令是为人类可读 SDK、固定契约或跨语言绑定准备的便利层；协议实现它们时内部也可复用 eval。AI 集成方可以只实现 `vcEval()` + 导航命令即可覆盖绝大部分自动化。
 - **返回值须可 JSON 序列化**：eval 中应 `return` 普通对象、数组、字符串、数字、布尔值；不要 return DOM 节点（会得到 `{ __vc: 'unserializable' }`）。需要 DOM 信息时在子页面内提取字段再 return。
-- **仍建议保留专用命令的场景**：`VC_NAVIGATE` 等导航（操作 viewer 外壳）；页面生命周期事件（#15–#17、#32）；`VC_CONSOLE_READ` / `VC_CONSOLE_UPDATED`；`VC_SCREENSHOT` 标为待实现，细节后议。
+- **被动导航（build `20260727-v15`+）**：子页面**不能**自主换页。点击、`location.assign`、`window.open` 等只上报 `VC_CLICK` / `VC_LOCATION`；**唯一**换页入口是父级 `VC_NAVIGATE`（及 `VC_BACK` / `VC_FORWARD` / `VC_RELOAD`）。`VC_EVAL` 内改 location / `.click()` 同样只上报。
 
 在当前已加载的**内层子页面**中执行 JavaScript，并异步返回 `VC_EVAL_RESULT`。
 
@@ -189,13 +189,13 @@ await vcRpc('VC_CONSOLE_READ_RESULT', 'VC_CONSOLE_READ', {
 | 加载结束 | `VC_LOADING` | `{ loading: false }` | 已有（常与 `VC_NAVIGATED` 连续触发） |
 | 加载失败 | `VC_LOAD_FAILED` | `{ url, message?, code? }` | 已有 |
 
-典型成功序列：
+典型成功序列（**仅父级下发 `VC_NAVIGATE` 等命令时**）：
 
 ```
 VC_NAVIGATING → VC_LOADING(true) → VC_NAVIGATED → VC_LOADING(false)
 ```
 
-用户点击页面内链、后退/前进触发的导航同样走上述序列。失败时发 `VC_LOAD_FAILED`（必要时另附 `VC_ERROR`）。
+子页面内点击链接、改 `location` **不会**触发上述序列；只会发 `VC_CLICK` / `VC_LOCATION`。父级决定是否再发 `VC_NAVIGATE`。
 
 ### `VC_READY`
 
@@ -228,7 +228,33 @@ Service Worker 注册完成，bridge 可接收导航命令。
 // }]
 ```
 
-用户点击页面内链接触发的跳转也会上报此事件。
+**仅**父级下发 `VC_NAVIGATE`（或 `VC_BACK` / `VC_FORWARD` / `VC_RELOAD`）并完成加载后上报。子页点击 / 改 location **不会**触发本事件。
+
+### `VC_CLICK`
+
+子页面发生点击（真鼠标或 `element.click()`）。纯事件，父级无需回复；**不会**因此导航或开浏览器 tab。
+
+```javascript
+// ['VC_CLICK', {
+//   ts: 1730000000000,
+//   tagName: 'A',
+//   href: 'https://example.com/path',
+//   target: '_blank',
+//   text: 'More information...',
+// }]
+```
+
+### `VC_LOCATION`
+
+子页面试图改地址（`location.assign`、`href=`、`window.open`、`reload`、表单 `submit` 等）。只上报，**不执行**。
+
+```javascript
+// ['VC_LOCATION', {
+//   ts: 1730000000000,
+//   method: 'assign',
+//   url: 'https://example.com/page#section',
+// }]
+```
 
 ### `VC_LOADING`
 
@@ -322,7 +348,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 
 ### 内部通道：`_VC_INJECT` / `__vcOnInjectConsole`（不对外）
 
-`inject.js` → `bridge.js`：优先调用 viewer 上的 `window.__vcOnInjectConsole(entry)`（绕过 jsproxy 对 `postMessage` 的 hook）；回退 `['_VC_INJECT', 'CONSOLE', entry]`。**父项目不应监听或发送**；对外仅 `VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`。
+`inject.js` → `bridge.js`：优先调用 viewer 上的 `__vcOnInjectConsole(entry)` / `__vcOnInjectClick` / `__vcOnInjectLocation`（绕过 jsproxy 对 `postMessage` 的 hook）；回退 `['_VC_INJECT', kind, payload]`（kind 为 `CONSOLE` | `CLICK` | `LOCATION`）。**父项目不应监听或发送**；对外分别对应 `VC_CONSOLE_*`、`VC_CLICK`、`VC_LOCATION`。
 
 ### 子页面内：原生 dialog 处理
 

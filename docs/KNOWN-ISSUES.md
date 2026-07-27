@@ -62,49 +62,20 @@ jsproxy [`page.js`](../public/jsproxy-src/page.js) ~367 行 hook 了 `Window.pro
 
 ---
 
-## `element.click()` 无效（上游 jsproxy 遗留，已在 bundle.built 修复）
+## 被动导航（build `20260727-v15`+）
 
-### 现象（build `20260727-v13` 及更早 `bundle.js` / 未修复的 `bundle.built.js`）
+virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不能开真浏览器 tab。
 
-`VC_EVAL` 里 `a.click()` / `button.click()` 无反应；包括 example.com 在内的多站复现；真实鼠标点击正常。
-
-### 根因
-
-jsproxy [`page.js`](../public/jsproxy-src/page.js) hook 了 `HTMLElement.prototype.click`：元素已在 DOM 中（`isConnected`）时 **未调用原始 click**（上游实现疏漏）。  
-鼠标点击走 Pointer/Click 事件链，不经过该 hook。
-
-### 修复（build `20260727-v14`+，`bundle.built.js`）
-
-connected 分支改为 `return apply(oldFn, this, arguments)`，与 detached 分支一样透传原生 click。改后执行 `npm run build:bundle` 并 bump `VC_BUILD`。
-
-### 若仍无效时的替代
-
-| 场景 | 做法 |
-|------|------|
-| 普通 `<a href>` 导航 | `location.assign(a.href)` 或 **`VC_NAVIGATE`** |
-| div/button/空 `<a>` + JS | `el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))` |
-
-### 如何确认仍在代理内
-
-```javascript
-location.pathname.includes('/-----')
-// 或监听 VC_NAVIGATED / readContentState
-```
-
-bridge 有 `recoverEscapedContent()`：内层 iframe 若跳到无 `/-----` 的外链，会尝试拉回代理。
-
----
-
-## 动态 / 非 `<a>` 的「链接」
-
-| 实现方式 | 说明 |
+| 子页行为 | 结果 |
 |----------|------|
-| JS 动态插入 `<a href>` | href setter + MutationObserver 一般会改写成代理 URL |
-| 空 `<a>`、`href="#"` + click 处理器 | 无 href 可 assign；用 `dispatchEvent('click')` 或解析 handler / data 属性 |
-| div/button 里 `location.href = url` | 页面 `location` 为 jsproxy 的 `__location`，通常会改写成代理 URL |
-| SPA `pushState` | bundle 有 hook；复杂路由需触发站点自己的逻辑或 `VC_NAVIGATE` |
+| 真鼠标点 `<a href>` | `VC_CLICK` + `preventDefault` |
+| `element.click()` / `location.assign` / `window.open` | `VC_CLICK` 或 `VC_LOCATION`，不跳转 |
+| `VC_EVAL` 内上述操作 | 同上（eval 也不能偷偷导航） |
+| 父级 `VC_NAVIGATE` | 唯一换页入口 |
 
-**AI 不应假设所有可点元素都是 `<a>`**；优先探测 URL，有则 `VC_NAVIGATE`，无则 `dispatchEvent('click')`。
+父级（Chromo / AI）收到 `VC_CLICK` / `VC_LOCATION` 后自行决定是否 `VC_NAVIGATE`、开 App 内标签或忽略。
+
+实现：`public/inject.js`（真鼠标 capture）、[`public/jsproxy-src/page.js`](../public/jsproxy-src/page.js)（程序化 click / open / submit）、[`public/jsproxy-src/fakeloc.js`](../public/jsproxy-src/fakeloc.js)（location 写入拦截）。
 
 ---
 

@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260727-v14'
+  var VC_BUILD = '20260727-v15'
 
   if (window.__vcInjected) {
     return
@@ -130,6 +130,107 @@
     ])
     return null
   }
+
+  function forwardInject(kind, payload) {
+    try {
+      var bridge = window.parent
+      if (kind === 'CLICK' && bridge && typeof bridge.__vcOnInjectClick === 'function') {
+        bridge.__vcOnInjectClick(payload)
+        return
+      }
+      if (kind === 'LOCATION' && bridge && typeof bridge.__vcOnInjectLocation === 'function') {
+        bridge.__vcOnInjectLocation(payload)
+        return
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      window.parent.postMessage([CHANNEL, kind, payload], '*')
+    } catch {
+      // ignore
+    }
+  }
+
+  window.__vcReportClick = function (payload) {
+    forwardInject('CLICK', payload)
+  }
+
+  window.__vcReportLocation = function (payload) {
+    forwardInject('LOCATION', payload)
+  }
+
+  function buildClickPayload(el) {
+    var tag = el.tagName || ''
+    var payload = {
+      ts: Date.now(),
+      tagName: tag,
+      id: el.id || '',
+      className: typeof el.className === 'string' ? el.className : '',
+      text: String(el.innerText || el.textContent || '')
+        .trim()
+        .slice(0, 200),
+    }
+    if (tag === 'A' || tag === 'AREA') {
+      payload.href = el.href || ''
+      payload.target = el.target || ''
+    }
+    return payload
+  }
+
+  function isNavigationalLink(el) {
+    if (!el || !el.href) {
+      return false
+    }
+    var href = String(el.href)
+    if (!href || href === '#' || href.indexOf('javascript:') === 0) {
+      return false
+    }
+    return true
+  }
+
+  document.addEventListener(
+    'click',
+    function (event) {
+      if (!event.isTrusted) {
+        return
+      }
+      var raw = event.target
+      if (!raw || raw.nodeType !== 1) {
+        return
+      }
+      var el = raw
+      var link = el.closest ? el.closest('a[href],area[href]') : null
+      forwardInject('CLICK', buildClickPayload(link || el))
+      if (link && isNavigationalLink(link)) {
+        event.preventDefault()
+      }
+    },
+    true,
+  )
+
+  document.addEventListener(
+    'submit',
+    function (event) {
+      var form = event.target
+      if (!form || form.tagName !== 'FORM') {
+        return
+      }
+      event.preventDefault()
+      var action = ''
+      try {
+        action = form.action || location.href
+      } catch {
+        action = ''
+      }
+      forwardInject('LOCATION', {
+        ts: Date.now(),
+        method: 'submit',
+        url: action,
+      })
+    },
+    true,
+  )
 
   console.info(
     '[virtual-chromo] inject.js v' + VC_VERSION + ' (build ' + VC_BUILD + ')',

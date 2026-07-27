@@ -1,4 +1,5 @@
 import * as urlx from "./urlx";
+import * as navReport from './vc-fakeloc-report.js'
 
 const {
   defineProperty,
@@ -13,7 +14,7 @@ function setup(obj, fakeLoc) {
     },
     set(val) {
       console.log('[jsproxy] %s set location: %s', obj, val)
-      fakeLoc.href = val
+      navReport.reportNavFromInput('href', val, fakeLoc, fakeLoc)
     }
   })
 }
@@ -37,11 +38,9 @@ export function createFakeLoc(global) {
   // 不缓存 location 属性，因为 beforeunload 事件会影响赋值
   const locObj = {
     get href() {
-      // console.log('[jsproxy] get location.href')
       return getPageUrlObj(location).href
     },
 
-    // TODO: 精简合并
     get protocol() {
       return getPageUrlObj(location).protocol
     },
@@ -82,10 +81,8 @@ export function createFakeLoc(global) {
       return this.href
     },
 
-    // TODO: Worker 中没有以下属性
     get ancestorOrigins() {
       if (!ancestorOrigins) {
-        // TODO: DOMStringList[]
         ancestorOrigins = []
 
         let p = global
@@ -99,74 +96,79 @@ export function createFakeLoc(global) {
 
     set href(val) {
       console.log('[jsproxy] set location.href:', val)
-      location.href = urlx.encUrlStrRel(val, this)
+      navReport.reportNavFromInput('href', val, locObj, location)
     },
 
     set protocol(val) {
       console.log('[jsproxy] set location.protocol:', val)
       const urlObj = getPageUrlObj(location)
-      urlObj.href = val
-      location.href = urlx.encUrlObj(urlObj)
+      urlObj.protocol = val
+      navReport.reportNavFromUrlObj('protocol', urlObj)
     },
 
     set host(val) {
       console.log('[jsproxy] set location.host:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.host = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('host', urlObj)
     },
 
     set hostname(val) {
       console.log('[jsproxy] set location.hostname:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.hostname = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('hostname', urlObj)
     },
 
     set port(val) {
       console.log('[jsproxy] set location.port:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.port = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('port', urlObj)
     },
 
     set pathname(val) {
       console.log('[jsproxy] set location.pathname:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.pathname = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('pathname', urlObj)
     },
 
     set search(val) {
-      location.search = val
+      console.log('[jsproxy] set location.search:', val)
+      const urlObj = getPageUrlObj(location)
+      urlObj.search = val
+      navReport.reportNavFromUrlObj('search', urlObj)
     },
 
     set hash(val) {
-      location.hash = val
+      console.log('[jsproxy] set location.hash:', val)
+      const urlObj = getPageUrlObj(location)
+      urlObj.hash = val
+      navReport.reportNavFromUrlObj('hash', urlObj)
     },
 
     reload() {
-      console.warn('[jsproxy] location.reload')
-      // @ts-ignore
-      return location.reload(...arguments)
+      console.warn('[jsproxy] location.reload (report only)')
+      navReport.reportCurrent('reload', location)
     },
 
     replace(val) {
+      console.warn('[jsproxy] location.replace:', val)
       if (val) {
-        console.warn('[jsproxy] location.replace:', val)
-        arguments[0] = urlx.encUrlStrRel(val, this)
+        navReport.reportNavFromInput('replace', val, locObj, location)
+      } else {
+        navReport.reportCurrent('replace', location)
       }
-      // @ts-ignore
-      return location.replace(...arguments)
     },
 
     assign(val) {
+      console.warn('[jsproxy] location.assign:', val)
       if (val) {
-        console.warn('[jsproxy] location.assign:', val)
-        arguments[0] = urlx.encUrlStrRel(val, this)
+        navReport.reportNavFromInput('assign', val, locObj, location)
+      } else {
+        navReport.reportCurrent('assign', location)
       }
-      // @ts-ignore
-      return location.assign(...arguments)
     },
   }
 
@@ -174,10 +176,8 @@ export function createFakeLoc(global) {
   const fakeLoc = setPrototypeOf(locObj, locProto)
   setup(global, fakeLoc)
 
-  // 非 Worker 环境
   const Document = global['Document']
   if (Document) {
-    // TODO: document.hasOwnProperty('location') 原本是 true
     setup(Document.prototype, fakeLoc)
   }
 

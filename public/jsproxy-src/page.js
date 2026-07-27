@@ -7,6 +7,7 @@ import * as cookie from './cookie.js'
 import * as jsfilter from './jsfilter.js'
 import * as env from './env.js'
 import * as client from './client.js'
+import * as vcReport from './vc-report.js'
 
 
 const {
@@ -265,13 +266,22 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hookHistory('replaceState')
 
   //
-  // hook window.open()
+  // virtual-chromo: passive navigation — report clicks, never native navigate
   //
-  hook.func(win, 'open', oldFn => function(url) {
-    if (url) {
-      arguments[0] = urlx.encUrlStrRel(url, url)
+  hook.func(win, 'open', _oldFn => function(url, target) {
+    let dest = ''
+    try {
+      dest = url ? urlx.decUrlStrRel(String(url), location.href) : String(location.href)
+    } catch {
+      dest = url ? String(url) : ''
     }
-    return apply(oldFn, this, arguments)
+    vcReport.reportLocation({
+      ts: Date.now(),
+      method: 'open',
+      url: dest,
+      target: target ? String(target) : '',
+    })
+    return null
   })
 
   //
@@ -597,41 +607,42 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hookAnchorUrlProp(areaProto)
 
 
-  // 该 form 可能没有经过 MutationObserver 处理
-  hook.func(formProto, 'submit', oldFn => function() {
-    this.action = this.action
-    return apply(oldFn, this, arguments)
+  // virtual-chromo: report form submit intent, do not navigate
+  hook.func(formProto, 'submit', _oldFn => function() {
+    let action = ''
+    try {
+      this.action = this.action
+      action = urlx.decUrlStrRel(this.action || location.href, this)
+    } catch {
+      action = this.action || ''
+    }
+    vcReport.reportLocation({
+      ts: Date.now(),
+      method: 'submit',
+      url: action,
+    })
   })
   
 
   //
-  // 监控 离屏元素.click() 方式打开页面
-  // 例如：
-  //  var s = document.createElement('div')
-  //  s.innerHTML = '<a href="https://google.com"><img></a>'
-  //  s.getElementsByTagName('img')[0].click()
+  // 监控 离屏 / 程序化 element.click() — 只上报 VC_CLICK，不调原生 click
   //
   const htmlProto = win['HTMLElement'].prototype
 
-  hook.func(htmlProto, 'click', oldFn => function() {
-    /** @type {HTMLAnchorElement} */
+  hook.func(htmlProto, 'click', _oldFn => function vcClick() {
+    /** @type {HTMLElement} */
     let el = this
+    const interactive = el.closest
+      ? el.closest('a,area,button,input,select,textarea,label')
+      : el
+    const target = interactive || el
+    vcReport.reportClick(vcReport.buildClickPayload(target))
 
-    // 已在 DOM 内：href 经 MutationObserver 处理过，直接走原生 click
-    if (el.isConnected) {
-      return apply(oldFn, this, arguments)
+    const tag = target.tagName
+    if (tag === 'A' || tag === 'AREA') {
+      return
     }
-    while (el) {
-      const tag = el.tagName
-      if (tag === 'A' || tag === 'AREA') {
-        // eslint-disable-next-line no-self-assign
-        el.href = el.href
-        break
-      }
-      // @ts-ignore
-      el = el.parentNode
-    }
-    return apply(oldFn, this, arguments)
+    vcReport.dispatchSyntheticClick(el, win)
   })
 
 

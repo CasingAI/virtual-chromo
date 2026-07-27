@@ -313,6 +313,29 @@
           case 'VC_CONSOLE_UPDATED':
             pullConsoleDelta()
             break
+          case 'VC_CLICK':
+            setStatus(
+              '点击: ' +
+                (payload && payload.tagName || '?') +
+                (payload && payload.href ? ' → ' + payload.href : ''),
+            )
+            if (payload && payload.href) {
+              navigate(payload.href)
+            }
+            break
+          case 'VC_LOCATION':
+            setStatus(
+              'location.' +
+                (payload && payload.method || '?') +
+                ': ' +
+                (payload && payload.url || ''),
+            )
+            if (payload && payload.url && payload.method !== 'reload') {
+              navigate(payload.url)
+            } else if (payload && payload.method === 'reload') {
+              post('VC_RELOAD')
+            }
+            break
         }
       })
 
