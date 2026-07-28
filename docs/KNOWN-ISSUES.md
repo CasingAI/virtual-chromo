@@ -251,7 +251,7 @@ Widget 本体为 **iframe** 加载 `cdn-cgi/challenge-platform/.../compact?lang=
 
 ## Network DevTools 能力边界
 
-instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Preview / Response / Initiator / Timing），但底层是 **Service Worker 代理**，不是浏览器原生 Network 面板。
+instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Preview / Initiator / Timing），但底层是 **Service Worker 代理**，不是浏览器原生 Network 面板。
 
 ### 已支持
 
@@ -261,7 +261,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **Referrer / Referrer Policy**
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
-- Preview：JSON 格式化、文本；图片/音视频等二进制占位不渲染
+- Preview：JSON 格式化、文本；图片/音视频等二进制占位不渲染；超大文本显示 Cache 前缀 + truncated 提示
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
@@ -296,14 +296,14 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 | Connection reuse / priority | 无 API | 不展示 |
 | Cookies 独立面板 | 未解析 Set-Cookie 树 | 可在 Response Headers 看原始头 |
 | WS 帧级详情 | 按 HTTP 记录，无帧协议 | 无 Frames Tab |
-| 超大文本整页展示 | 避免整包过桥 | Response 流式读 Cache 前缀（约 64KB）+ truncated 提示 |
+| 超大文本整页展示 | 避免整包过桥 | Preview 流式读 Cache 前缀（约 64KB）+ truncated 提示 |
 | 浏览器 HTTP disk/memory cache 状态 | 未接 Resource Timing | Served from「?」中说明 |
 
 ### 自检
 
 1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v7`+）
 2. Network 点选请求：Headers 三区（General / Response / Request）可见
-3. 选中 hasBody 请求：Response/Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
+3. 选中 hasBody 请求：Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
 4. 同 session 刷新后同 URL：第二次应出现 `cache` badge / `DevTools memory cache`
 5. 首次 GET 未命中时点 Served from 旁 **?**：写入条件绿、`热缓存命中` 为灰色「本次写入」；可看到「SW 中已有该 URL 条目」
 6. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
