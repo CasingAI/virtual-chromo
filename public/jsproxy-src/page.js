@@ -668,9 +668,6 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
   // virtual-chromo: report form submit intent, do not navigate
   hook.func(formProto, 'submit', _oldFn => function() {
-    if (vcReport.isInsideVConsole(this)) {
-      return apply(_oldFn, this, arguments)
-    }
     let action = ''
     try {
       this.action = this.action
@@ -678,23 +675,9 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     } catch {
       action = this.action || ''
     }
-    const submitUrl = vcReport.buildFormSubmitUrl(this, action || location.href)
-    let url = submitUrl || action
-    try {
-      url = urlx.decUrlStrRel(url, this)
-    } catch {
-      // keep submitUrl/action
-    }
-    let httpMethod = String(this.method || 'get').toLowerCase()
-    if (httpMethod !== 'get' && httpMethod !== 'post') {
-      httpMethod = 'get'
-    }
-    vcReport.reportLocation({
-      ts: Date.now(),
-      method: 'submit',
-      httpMethod,
-      url,
-    })
+    vcReport.reportLocation(
+      vcReport.buildFormSubmitPayload(this, action || location.href),
+    )
   })
   
 
@@ -706,9 +689,6 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hook.func(htmlProto, 'click', _oldFn => function vcClick() {
     /** @type {HTMLElement} */
     let el = this
-    if (vcReport.isInsideVConsole(el)) {
-      return apply(_oldFn, this, arguments)
-    }
     const interactive = el.closest
       ? el.closest('a,area,button,input,select,textarea,label')
       : el

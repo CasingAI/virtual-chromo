@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v12'
+  var VC_BUILD = '20260728-v11'
 
   if (window.__vcInjected) {
     return
@@ -176,14 +176,6 @@
     forwardInject('HISTORY', payload)
   }
 
-  function isInsideVConsole(el) {
-    return !!(el && el.closest && el.closest('#__vconsole'))
-  }
-
-  function anchorHasHref(el) {
-    return !!(el && el.hasAttribute && el.hasAttribute('href'))
-  }
-
   function buildClickPayload(el) {
     var tag = el.tagName || ''
     var payload = {
@@ -195,20 +187,103 @@
         .trim()
         .slice(0, 200),
     }
-    if ((tag === 'A' || tag === 'AREA') && anchorHasHref(el)) {
+    if (tag === 'A' || tag === 'AREA') {
       payload.href = el.href || ''
       payload.target = el.target || ''
     }
     return payload
   }
 
-  function isNavigationalLink(el) {
-    if (!el || !anchorHasHref(el) || !el.href) {
+  function formHasFileInput(form) {
+    try {
+      var inputs = form.querySelectorAll('input[type=file]')
+      for (var i = 0; i < inputs.length; i++) {
+        var input = inputs[i]
+        if (input.files && input.files.length > 0) {
+          return true
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+    return false
+  }
+
+  function serializeUrlEncodedForm(form) {
+    try {
+      var enctype = String(form.enctype || 'application/x-www-form-urlencoded').toLowerCase()
+      if (enctype !== 'application/x-www-form-urlencoded') {
+        return null
+      }
+      var params = new URLSearchParams()
+      var fd = new FormData(form)
+      fd.forEach(function (value, key) {
+        if (!key) {
+          return
+        }
+        if (typeof value === 'string') {
+          params.append(key, value)
+        }
+      })
+      return params.toString()
+    } catch (err) {
+      return null
+    }
+  }
+
+  function buildFormSubmitPayload(form) {
+    var httpMethod = String(form.method || 'get').toLowerCase()
+    if (httpMethod !== 'get' && httpMethod !== 'post') {
+      httpMethod = 'get'
+    }
+    var payload = {
+      ts: Date.now(),
+      method: 'submit',
+      httpMethod: httpMethod,
+      url: buildFormSubmitUrl(form),
+    }
+    if (httpMethod === 'post') {
+      if (formHasFileInput(form)) {
+        payload.formFiles = true
+      } else {
+        var body = serializeUrlEncodedForm(form)
+        if (body !== null) {
+          payload.formBody = body
+          payload.formEnctype = 'application/x-www-form-urlencoded'
+        }
+      }
+    }
+    return payload
+  }
+
+  function isSameDocumentUrl(targetHref, currentHref) {
+    try {
+      var target = new URL(targetHref, currentHref)
+      var current = new URL(currentHref)
+      return (
+        target.origin === current.origin &&
+        target.pathname === current.pathname &&
+        target.search === current.search
+      )
+    } catch (err) {
       return false
     }
-    var href = String(el.href)
+  }
+
+  function shouldPreventLinkNavigation(link) {
+    if (!link || !link.href) {
+      return false
+    }
+    var href = String(link.href)
     if (!href || href === '#' || href.indexOf('javascript:') === 0) {
       return false
+    }
+    try {
+      if (isSameDocumentUrl(href, location.href)) {
+        return false
+      }
+    } catch (err2) {
+      // fall through
     }
     return true
   }
@@ -227,12 +302,9 @@
         return
       }
       var el = raw
-      if (isInsideVConsole(el)) {
-        return
-      }
       var link = el.closest ? el.closest('a[href],area[href]') : null
       forwardInject('CLICK', buildClickPayload(link || el))
-      if (link && isNavigationalLink(link)) {
+      if (link && shouldPreventLinkNavigation(link)) {
         event.preventDefault()
       }
     },
@@ -248,7 +320,11 @@
     }
     var method = String(form.method || 'get').toLowerCase()
     if (method !== 'get') {
-      return action
+      try {
+        return new URL(action, location.href).href
+      } catch (err) {
+        return action
+      }
     }
     try {
       var url = new URL(action, location.href)
@@ -277,20 +353,8 @@
       if (!form || form.tagName !== 'FORM') {
         return
       }
-      if (isInsideVConsole(form)) {
-        return
-      }
       event.preventDefault()
-      var httpMethod = String(form.method || 'get').toLowerCase()
-      if (httpMethod !== 'get' && httpMethod !== 'post') {
-        httpMethod = 'get'
-      }
-      forwardInject('LOCATION', {
-        ts: Date.now(),
-        method: 'submit',
-        httpMethod: httpMethod,
-        url: buildFormSubmitUrl(form),
-      })
+      forwardInject('LOCATION', buildFormSubmitPayload(form))
     },
     true,
   )

@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v12'
+  const BUILD = '20260728-v11'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -493,15 +493,13 @@
 
       const style = document.createElement('style')
       style.textContent =
-        '.vcd-root{position:fixed;left:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
-        '.vcd-root[hidden]{display:none!important}' +
+        '.vcd-root{position:fixed;right:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
         '.vcd-root *{box-sizing:border-box}' +
         '.vcd-switch{pointer-events:auto;width:36px;height:36px;padding:0;border:0;border-radius:18px;background:#2f9e44;color:#fff;font-size:12px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer;position:relative}' +
         '.vcd-switch:active{transform:scale(.96)}' +
         '.vcd-badge{position:absolute;top:-3px;right:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:#e03131;color:#fff;font-size:9px;line-height:14px;text-align:center}' +
         /* hidden must win over display:flex — this was why close did nothing */
-        /* left-aligned to avoid colliding with page-side vConsole (bottom-right) */
-        '.vcd-panel{pointer-events:auto;position:absolute;left:0;bottom:44px;width:min(88vw,320px);height:min(52vh,380px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
+        '.vcd-panel{pointer-events:auto;position:absolute;right:0;bottom:44px;width:min(88vw,320px);height:min(52vh,380px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
         '.vcd-panel.vcd-panel--open,.vcd-panel:not([hidden]){display:flex}' +
         '.vcd-panel[hidden]{display:none!important}' +
         '.vcd-panel__head{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#25262b;border-bottom:1px solid #343a40}' +
@@ -606,26 +604,8 @@
         return
       }
       buildUi()
-      // Hidden until parent enables via VC_DEBUG_PANEL (Extensions tab).
-      root.hidden = true
       hookConsole()
       addLog('info', ['debug panel ready', versionLabel || ''])
-    }
-
-    /**
-     * @param {boolean} enabled
-     */
-    function setVisible(enabled) {
-      if (!root) {
-        init({})
-      }
-      if (!root) {
-        return
-      }
-      root.hidden = !enabled
-      if (!enabled) {
-        setPanelOpen(false)
-      }
     }
 
     /**
@@ -637,7 +617,6 @@
 
     return {
       init,
-      setVisible,
       log: function () {
         addLog('log', Array.from(arguments))
       },
@@ -752,8 +731,8 @@
   /** @type {boolean} */
   let fatal = false
 
-  /** @type {string|null} */
-  let pendingNavigateUrl = null
+  /** @type {{ url: string, method?: string, body?: string }|null} */
+  let pendingNavigateRequest = null
 
   /** Last known real URL for the content iframe (used when cross-origin blocks location access). */
   /** @type {string} */
@@ -789,12 +768,12 @@
     clearSwReadyWait()
     swReadyWaitTimer = setTimeout(function () {
       swReadyWaitTimer = null
-      if (swReady || !pendingNavigateUrl) {
+      if (swReady || !pendingNavigateRequest) {
         return
       }
-      const url = pendingNavigateUrl
-      pendingNavigateUrl = null
-      emitLoadFailed(url, 'Service Worker 未就绪（加载超时）', 'SW_NOT_READY')
+      const req = pendingNavigateRequest
+      pendingNavigateRequest = null
+      emitLoadFailed(req.url, 'Service Worker 未就绪（加载超时）', 'SW_NOT_READY')
     }, SW_READY_WAIT_MS)
   }
 
@@ -909,6 +888,9 @@
       emitError('content iframe not found', 'NO_IFRAME')
       return
     }
+    if (!contentFrame.name) {
+      contentFrame.name = 'vc-content'
+    }
 
     window.__vcOnInjectConsole = ingestInjectConsoleEntry
     window.__vcOnInjectClick = ingestInjectClick
@@ -944,11 +926,11 @@
         return
       }
       emitReady()
-      const queued = pendingNavigateUrl
-      pendingNavigateUrl = null
+      const queued = pendingNavigateRequest
+      pendingNavigateRequest = null
       if (queued) {
-        vlog('info', ['flushing queued navigate:', queued])
-        applyNavigate(queued)
+        vlog('info', ['flushing queued navigate:', queued.url])
+        applyNavigateRequest(queued)
       }
     })
   }
@@ -1195,9 +1177,6 @@
       case 'VC_NETWORK_OPTIONS':
         applyNetworkOptions(payload)
         break
-      case 'VC_DEBUG_PANEL':
-        applyDebugPanelOptions(payload)
-        break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
         break
@@ -1221,7 +1200,7 @@
   /**
    * @param {string} url
    */
-  function applyNavigate(url) {
+  function applyNavigateGet(url) {
     if (!contentFrame) {
       return
     }
@@ -1231,6 +1210,61 @@
     emitNavigating(url)
     emitLoading(true)
     contentFrame.src = toProxyUrl(url)
+  }
+
+  /**
+   * @param {string} url
+   * @param {string} body application/x-www-form-urlencoded
+   */
+  function applyNavigatePost(url, body) {
+    if (!contentFrame) {
+      return
+    }
+    currentContentUrl = url
+    recordHistory('navigate:post', url)
+    clearConsoleBufferForNavigation()
+    emitNavigating(url)
+    emitLoading(true)
+
+    const proxyUrl = toProxyUrl(url)
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = proxyUrl
+    form.target = contentFrame.name || 'vc-content'
+    form.style.display = 'none'
+    form.acceptCharset = 'UTF-8'
+
+    const params = new URLSearchParams(body)
+    params.forEach(function (value, key) {
+      const input = document.createElement('input')
+      input.type = 'hidden'
+      input.name = key
+      input.value = value
+      form.appendChild(input)
+    })
+
+    document.body.appendChild(form)
+    form.submit()
+    document.body.removeChild(form)
+  }
+
+  /**
+   * @param {{ url: string, method?: string, body?: string }} request
+   */
+  function applyNavigateRequest(request) {
+    const method = request.method ? String(request.method).toUpperCase() : 'GET'
+    if (method === 'POST' && typeof request.body === 'string') {
+      applyNavigatePost(request.url, request.body)
+      return
+    }
+    applyNavigateGet(request.url)
+  }
+
+  /**
+   * @param {string} url
+   */
+  function applyNavigate(url) {
+    applyNavigateGet(url)
   }
 
   /**
@@ -1254,8 +1288,24 @@
       return
     }
 
+    const method =
+      payload && typeof payload === 'object' && payload.method
+        ? String(payload.method).toUpperCase()
+        : 'GET'
+    const body =
+      payload && typeof payload === 'object' && typeof payload.body === 'string'
+        ? payload.body
+        : undefined
+
+    /** @type {{ url: string, method?: string, body?: string }} */
+    const request = { url }
+    if (method === 'POST' && body !== undefined) {
+      request.method = 'POST'
+      request.body = body
+    }
+
     if (!swReady) {
-      pendingNavigateUrl = url
+      pendingNavigateRequest = request
       vlog('info', ['navigate queued (SW not ready):', url])
       emitNavigating(url)
       emitLoading(true)
@@ -1264,8 +1314,8 @@
     }
 
     clearSwReadyWait()
-    pendingNavigateUrl = null
-    applyNavigate(url)
+    pendingNavigateRequest = null
+    applyNavigateRequest(request)
   }
 
   /**
@@ -2206,19 +2256,30 @@
       return
     }
     const data =
-      /** @type {{ ts?: number, method?: string, httpMethod?: string, url?: string, target?: string }} */ (
+      /** @type {{ ts?: number, method?: string, httpMethod?: string, url?: string, target?: string, formBody?: string, formEnctype?: string, formFiles?: boolean }} */ (
         payload
       )
     const httpMethod =
       typeof data.httpMethod === 'string' ? data.httpMethod.toLowerCase() : undefined
-    postToParent('VC_LOCATION', {
+    /** @type {Record<string, unknown>} */
+    const out = {
       ts: typeof data.ts === 'number' ? data.ts : Date.now(),
       method: typeof data.method === 'string' ? data.method : 'unknown',
       httpMethod:
         httpMethod === 'get' || httpMethod === 'post' ? httpMethod : undefined,
       url: typeof data.url === 'string' ? data.url : '',
       target: typeof data.target === 'string' ? data.target : undefined,
-    })
+    }
+    if (typeof data.formBody === 'string') {
+      out.formBody = data.formBody
+    }
+    if (typeof data.formEnctype === 'string') {
+      out.formEnctype = data.formEnctype
+    }
+    if (data.formFiles === true) {
+      out.formFiles = true
+    }
+    postToParent('VC_LOCATION', out)
   }
 
   /**
@@ -2442,16 +2503,6 @@
       networkDisableCache = data.disableCache
     }
     postNetworkOptsToSw()
-  }
-
-  /**
-   * Show/hide viewer DebugPanel (green「调」button). Default hidden.
-   * @param {unknown} payload
-   */
-  function applyDebugPanelOptions(payload) {
-    const data = payload && typeof payload === 'object' ? payload : {}
-    const enabled = data.enabled === true
-    DebugPanel.setVisible(enabled)
   }
 
   function dropArchiveEntry(entryId) {
@@ -2937,7 +2988,7 @@
         // chrome-error / failed nav → recover → fail again = infinite flicker
         emitLoadFailed(
           escapedUrl,
-          '页面反复加载失败（上游拒绝或错误页循环）。若来自 POST 表单，当前仅支持 GET 导航。',
+          '页面反复加载失败（上游拒绝或错误页循环）。若来自 POST 表单，请确认父级已用 VC_NAVIGATE { method:"POST", body } 导航。',
           'LOAD_RECOVER_LOOP',
         )
         emitLoading(false)

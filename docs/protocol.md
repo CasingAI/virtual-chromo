@@ -49,9 +49,15 @@ virtual-chromo 作为 iframe 嵌入外层「浏览器壳」项目，双方通过
 
 ```javascript
 iframe.contentWindow.postMessage(['VC_NAVIGATE', { url: 'https://example.com' }], '*')
+// POST 表单整页导航（application/x-www-form-urlencoded）：
+iframe.contentWindow.postMessage(['VC_NAVIGATE', {
+  url: 'https://example.com/results.html',
+  method: 'POST',
+  body: 'field1=value1&field2=value2',
+}], '*')
 ```
 
-`url` 可带或不带协议；无协议时自动补 `https://`。
+`url` 可带或不带协议；无协议时自动补 `https://`。`method` 省略或为 `GET` 时等价于设置 `#content` iframe 的 `src`；`method: 'POST'` 且带 `body` 时，viewer 向 content iframe 提交隐藏表单（target=`vc-content`）。
 
 ### `VC_BACK`
 
@@ -244,19 +250,6 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 
 > **后续 TODO**（存储管理 API，对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS` / `VC_NETWORK_CACHE_CLEAR` / `VC_NETWORK_CACHE_LIST` — 查询 hot/archive 占用、按层清空、调试列出 hot key。当前清除仍走 `VC_SESSION_DESTROY` → `destroySessionCaches`。
 
-### `VC_DEBUG_PANEL`
-
-显示 / 隐藏 viewer 内置 DebugPanel（左下角绿色「调」圆钮，Log / Messages / Network / State）。**默认隐藏**；由 instant-app DevTools → Extensions 开关控制。不需要 RPC 响应。
-
-```javascript
-iframe.contentWindow.postMessage(['VC_DEBUG_PANEL', {
-  enabled: true,
-}], '*')
-```
-
-- 面板挂在 **viewer**（非代理页），导航不会销毁；关闭 `enabled` 时收起面板并隐藏圆钮
-- 与页内 vConsole 并存时：DebugPanel 在左下，vConsole 在右下，避免重叠
-
 ### `VC_NETWORK_BODY_READ`
 
 按 network entry UUID 读取**不可变**响应快照（archive 层，与 URL 无关）。
@@ -349,10 +342,15 @@ Service Worker 注册完成，bridge 可接收导航命令。
 //   method: 'assign',       // 'assign' | 'replace' | 'reload' | 'open' | 'submit' | ...
 //   httpMethod: 'post',     // 仅 method==='submit' 时可选：'get' | 'post'
 //   url: 'https://example.com/page#section',
+//   formBody: 'a=1&b=2',    // POST urlencoded 字段（method==='submit' && httpMethod==='post'）
+//   formEnctype: 'application/x-www-form-urlencoded',
+//   formFiles: true,        // 含已选 file input 时；父级应拒绝或提示不支持
 // }]
 ```
 
-`method: 'submit'` 且 `httpMethod: 'post'` 时，父级**不应**用普通 `VC_NAVIGATE`（GET）打开目标：被动导航无法附带表单 body，会打挂仅接受 POST 的页面，并可能触发 iframe 错误页 ↔ 代理恢复的闪烁循环（build `20260728-v10`+ Chromo 会拦截并提示）。
+`method: 'submit'` 且 `httpMethod: 'post'` 时，父级应发 `VC_NAVIGATE { url, method:'POST', body: formBody }`，**不要**用无 body 的 GET 导航。
+
+**Hash 路由**（build `20260728-v11`+）：子页 `location.hash` / 同文档 `#anchor` 点击在页内完成，上报 `VC_HISTORY { method:'hash'|... }`；父级只同步地址栏，勿 `VC_NAVIGATE`。
 
 ### `VC_HISTORY`
 
@@ -363,7 +361,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 ```javascript
 // ['VC_HISTORY', {
 //   ts: 1730000000000,
-//   method: 'pushState',   // 'pushState' | 'replaceState' | 'popstate'
+//   method: 'pushState',   // 'pushState' | 'replaceState' | 'popstate' | 'hash' | 'href' | ...
 //   url: 'https://example.com/about',
 //   title: 'About',
 //   state: { ... },        // history.state；不可序列化时为 { __vc: 'unserializable' }

@@ -1,5 +1,6 @@
 import * as urlx from "./urlx";
 import * as navReport from './vc-fakeloc-report.js'
+import * as vcReport from './vc-report.js'
 
 const {
   defineProperty,
@@ -32,6 +33,77 @@ export function createFakeLoc(global) {
    */
   function getPageUrlObj(loc) {
     return new URL(urlx.decUrlObj(loc))
+  }
+
+  function getDecodedHref() {
+    return getPageUrlObj(location).href
+  }
+
+  /**
+   * Apply hash / same-document URL changes locally (no full navigation).
+   * @param {string} method
+   * @param {string} nextHref decoded absolute URL
+   * @returns {boolean}
+   */
+  function applySameDocumentNavigation(method, nextHref) {
+    const currentHref = getDecodedHref()
+    let nextUrlObj
+    try {
+      nextUrlObj = new URL(nextHref, currentHref)
+    } catch {
+      return false
+    }
+    if (!vcReport.isSameDocumentUrl(nextUrlObj.href, currentHref)) {
+      return false
+    }
+
+    const enc = urlx.encUrlObj(nextUrlObj)
+    const prevHash = new URL(currentHref).hash
+    try {
+      global.history.replaceState(global.history.state, '', enc)
+    } catch {
+      try {
+        location.href = enc
+      } catch {
+        return false
+      }
+    }
+
+    if (prevHash !== nextUrlObj.hash) {
+      try {
+        global.dispatchEvent(
+          new HashChangeEvent('hashchange', {
+            oldURL: currentHref,
+            newURL: nextUrlObj.href,
+          }),
+        )
+      } catch {
+        // ignore
+      }
+    }
+
+    vcReport.reportHistory({
+      ts: Date.now(),
+      method,
+      url: nextUrlObj.href,
+      title: global.document && global.document.title ? global.document.title : '',
+    })
+    return true
+  }
+
+  /**
+   * @param {string} method
+   * @param {string} val
+   * @returns {boolean}
+   */
+  function trySameDocumentFromInput(method, val) {
+    try {
+      const enc = urlx.encUrlStrRel(val, locObj)
+      const decoded = urlx.decUrlStrAbs(enc)
+      return applySameDocumentNavigation(method, decoded)
+    } catch {
+      return false
+    }
   }
 
 
@@ -96,6 +168,9 @@ export function createFakeLoc(global) {
 
     set href(val) {
       console.log('[jsproxy] set location.href:', val)
+      if (trySameDocumentFromInput('href', val)) {
+        return
+      }
       navReport.reportNavFromInput('href', val, locObj, location)
     },
 
@@ -143,9 +218,13 @@ export function createFakeLoc(global) {
 
     set hash(val) {
       console.log('[jsproxy] set location.hash:', val)
-      const urlObj = getPageUrlObj(location)
-      urlObj.hash = val
-      navReport.reportNavFromUrlObj('hash', urlObj)
+      const next = new URL(getDecodedHref())
+      let hash = String(val)
+      if (hash && !hash.startsWith('#')) {
+        hash = '#' + hash
+      }
+      next.hash = hash
+      applySameDocumentNavigation('hash', next.href)
     },
 
     reload() {
@@ -156,6 +235,9 @@ export function createFakeLoc(global) {
     replace(val) {
       console.warn('[jsproxy] location.replace:', val)
       if (val) {
+        if (trySameDocumentFromInput('replace', val)) {
+          return
+        }
         navReport.reportNavFromInput('replace', val, locObj, location)
       } else {
         navReport.reportCurrent('replace', location)
@@ -165,6 +247,9 @@ export function createFakeLoc(global) {
     assign(val) {
       console.warn('[jsproxy] location.assign:', val)
       if (val) {
+        if (trySameDocumentFromInput('assign', val)) {
+          return
+        }
         navReport.reportNavFromInput('assign', val, locObj, location)
       } else {
         navReport.reportCurrent('assign', location)

@@ -91,8 +91,71 @@ export function reportLocation(payload) {
 }
 
 /**
+ * Same document when origin, pathname, and search match (hash may differ).
+ * @param {string} targetHref
+ * @param {string} currentHref
+ */
+export function isSameDocumentUrl(targetHref, currentHref) {
+  try {
+    const target = new URL(targetHref, currentHref)
+    const current = new URL(currentHref)
+    return (
+      target.origin === current.origin &&
+      target.pathname === current.pathname &&
+      target.search === current.search
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * @param {HTMLFormElement} form
+ */
+function formHasFileInput(form) {
+  try {
+    const inputs = form.querySelectorAll('input[type=file]')
+    for (let i = 0; i < inputs.length; i++) {
+      const input = inputs[i]
+      if (input.files && input.files.length > 0) {
+        return true
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false
+}
+
+/**
+ * @param {HTMLFormElement} form
+ * @returns {string|null}
+ */
+function serializeUrlEncodedForm(form) {
+  try {
+    const enctype = String(form.enctype || 'application/x-www-form-urlencoded').toLowerCase()
+    if (enctype !== 'application/x-www-form-urlencoded') {
+      return null
+    }
+    const params = new URLSearchParams()
+    const fd = new FormData(form)
+    fd.forEach((value, key) => {
+      if (!key) {
+        return
+      }
+      if (typeof value === 'string') {
+        params.append(key, value)
+      }
+    })
+    return params.toString()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Build the URL a GET form would navigate to (action + successful controls).
- * POST forms still return the action URL only (body not representable in VC_LOCATION).
+ * POST forms return the action URL only; use buildFormSubmitPayload for body.
  * @param {HTMLFormElement} form
  * @param {string=} fallbackHref
  */
@@ -109,7 +172,11 @@ export function buildFormSubmitUrl(form, fallbackHref) {
 
   const method = String(form.method || 'get').toLowerCase()
   if (method !== 'get') {
-    return action
+    try {
+      return new URL(action, fallbackHref || action).href
+    } catch {
+      return action
+    }
   }
 
   try {
@@ -131,6 +198,41 @@ export function buildFormSubmitUrl(form, fallbackHref) {
   } catch {
     return action
   }
+}
+
+/**
+ * @param {HTMLFormElement} form
+ * @param {string=} fallbackHref
+ */
+export function buildFormSubmitPayload(form, fallbackHref) {
+  let httpMethod = String(form.method || 'get').toLowerCase()
+  if (httpMethod !== 'get' && httpMethod !== 'post') {
+    httpMethod = 'get'
+  }
+
+  const url = buildFormSubmitUrl(form, fallbackHref)
+
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    ts: Date.now(),
+    method: 'submit',
+    httpMethod,
+    url,
+  }
+
+  if (httpMethod === 'post') {
+    if (formHasFileInput(form)) {
+      payload.formFiles = true
+    } else {
+      const body = serializeUrlEncodedForm(form)
+      if (body !== null) {
+        payload.formBody = body
+        payload.formEnctype = 'application/x-www-form-urlencoded'
+      }
+    }
+  }
+
+  return payload
 }
 
 /**

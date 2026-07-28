@@ -2,21 +2,30 @@
  * virtual-chromo passive navigation — trusted pointer capture (bundle-side).
  * Runs from page.js so clicks are intercepted even if inject.js fails to load.
  */
+import * as urlx from './urlx.js'
 import * as vcReport from './vc-report.js'
 
 /** @type {WeakSet<Document>} */
 const installedDocs = new WeakSet()
 
 /**
- * @param {string | null | undefined} href
+ * @param {HTMLAnchorElement | HTMLAreaElement} link
  */
-function isNavigationalHref(href) {
-  if (!href) {
+function shouldPreventLinkNavigation(link) {
+  if (!link || !vcReport.anchorHasHref(link)) {
     return false
   }
-  const s = String(href)
-  if (!s || s === '#' || s.startsWith('javascript:')) {
+  const href = link.href
+  if (!href || href === '#' || href.startsWith('javascript:')) {
     return false
+  }
+  try {
+    const current = urlx.decUrlObj(location)
+    if (vcReport.isSameDocumentUrl(href, current)) {
+      return false
+    }
+  } catch {
+    // fall through
   }
   return true
 }
@@ -39,7 +48,7 @@ function onTrustedPointer(event) {
   }
   const link = el.closest ? el.closest('a[href],area[href]') : null
   vcReport.reportClick(vcReport.buildClickPayload(link || el))
-  if (link && vcReport.anchorHasHref(link) && isNavigationalHref(link.href)) {
+  if (link && shouldPreventLinkNavigation(link)) {
     event.preventDefault()
   }
 }

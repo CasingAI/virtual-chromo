@@ -91,6 +91,7 @@
   </div>
   <iframe
     id="content"
+    name="vc-content"
     title="virtual-chromo content"
     sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
   ></iframe>
@@ -245,7 +246,7 @@
           return
         }
 
-        sw.register('/sw.js?b=20260728-v12')
+        sw.register('/sw.js?b=20260728-v11')
           .then(function (reg) {
             watchForUpdates(reg)
             return onSwReady()
