@@ -340,6 +340,7 @@ instant-app Chromo DevTools 的 **扩展** Tab 可启用两类调试 UI：
 
 - 开启：父页 `VC_EVAL` 加载 Worker 托管的 [`public/vendor/vconsole.min.js`](../public/vendor/vconsole.min.js)，再 `new VConsole()`
 - 关闭：`destroy()` + 移除 `#__vconsole`
+- **Tab 点击**：vConsole Tab 为无 `href` 的 `<a>`；build `20260728-v12`+ 在被动导航中忽略 `#__vconsole` 内点击，且仅对有 `href` 属性的链接上报 URL
 - **导航 / reload** 后若开关仍为 on，约 300ms 自动重注入
 - Console 双重 hook：Chromo `inject.js` 与 vConsole 均可能 hook `console.*`
 

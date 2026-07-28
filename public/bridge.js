@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v11'
+  const BUILD = '20260728-v12'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303

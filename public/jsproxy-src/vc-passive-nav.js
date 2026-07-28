@@ -34,9 +34,12 @@ function onTrustedPointer(event) {
   }
   /** @type {Element} */
   const el = raw
+  if (vcReport.isInsideVConsole(el)) {
+    return
+  }
   const link = el.closest ? el.closest('a[href],area[href]') : null
   vcReport.reportClick(vcReport.buildClickPayload(link || el))
-  if (link && isNavigationalHref(link.href)) {
+  if (link && vcReport.anchorHasHref(link) && isNavigationalHref(link.href)) {
     event.preventDefault()
   }
 }

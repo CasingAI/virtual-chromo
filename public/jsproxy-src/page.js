@@ -668,6 +668,9 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
   // virtual-chromo: report form submit intent, do not navigate
   hook.func(formProto, 'submit', _oldFn => function() {
+    if (vcReport.isInsideVConsole(this)) {
+      return apply(_oldFn, this, arguments)
+    }
     let action = ''
     try {
       this.action = this.action
@@ -703,6 +706,9 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hook.func(htmlProto, 'click', _oldFn => function vcClick() {
     /** @type {HTMLElement} */
     let el = this
+    if (vcReport.isInsideVConsole(el)) {
+      return apply(_oldFn, this, arguments)
+    }
     const interactive = el.closest
       ? el.closest('a,area,button,input,select,textarea,label')
       : el

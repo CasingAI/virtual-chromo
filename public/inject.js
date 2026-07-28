@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v11'
+  var VC_BUILD = '20260728-v12'
 
   if (window.__vcInjected) {
     return
@@ -176,6 +176,14 @@
     forwardInject('HISTORY', payload)
   }
 
+  function isInsideVConsole(el) {
+    return !!(el && el.closest && el.closest('#__vconsole'))
+  }
+
+  function anchorHasHref(el) {
+    return !!(el && el.hasAttribute && el.hasAttribute('href'))
+  }
+
   function buildClickPayload(el) {
     var tag = el.tagName || ''
     var payload = {
@@ -187,7 +195,7 @@
         .trim()
         .slice(0, 200),
     }
-    if (tag === 'A' || tag === 'AREA') {
+    if ((tag === 'A' || tag === 'AREA') && anchorHasHref(el)) {
       payload.href = el.href || ''
       payload.target = el.target || ''
     }
@@ -195,7 +203,7 @@
   }
 
   function isNavigationalLink(el) {
-    if (!el || !el.href) {
+    if (!el || !anchorHasHref(el) || !el.href) {
       return false
     }
     var href = String(el.href)
@@ -219,6 +227,9 @@
         return
       }
       var el = raw
+      if (isInsideVConsole(el)) {
+        return
+      }
       var link = el.closest ? el.closest('a[href],area[href]') : null
       forwardInject('CLICK', buildClickPayload(link || el))
       if (link && isNavigationalLink(link)) {
@@ -264,6 +275,9 @@
     function (event) {
       var form = event.target
       if (!form || form.tagName !== 'FORM') {
+        return
+      }
+      if (isInsideVConsole(form)) {
         return
       }
       event.preventDefault()

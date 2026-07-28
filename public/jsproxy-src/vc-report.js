@@ -141,6 +141,21 @@ export function reportHistory(payload) {
 }
 
 /**
+ * @param {Element | null | undefined} el
+ */
+export function isInsideVConsole(el) {
+  return !!(el && el.closest && el.closest('#__vconsole'))
+}
+
+/**
+ * Anchors without an href attribute are not links; jsproxy's href hook turns "" into the page URL.
+ * @param {Element} el
+ */
+export function anchorHasHref(el) {
+  return typeof el.hasAttribute === 'function' && el.hasAttribute('href')
+}
+
+/**
  * @param {Element} el
  */
 export function buildClickPayload(el) {
@@ -155,7 +170,7 @@ export function buildClickPayload(el) {
       .trim()
       .slice(0, 200),
   }
-  if (tag === 'A' || tag === 'AREA') {
+  if ((tag === 'A' || tag === 'AREA') && anchorHasHref(el)) {
     /** @type {HTMLAnchorElement} */
     const link = el
     payload.href = link.href || ''
