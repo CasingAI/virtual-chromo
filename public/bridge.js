@@ -22,6 +22,8 @@
   const MSG_PAGE_NETWORK_HOT_PROBE = 312
   const MSG_SW_NETWORK_HOT_PROBE_REPLY = 313
   const MSG_PAGE_NETWORK_INITIATOR_TIP = 314
+  const MSG_PAGE_NETWORK_BODY_READ_LINES = 315
+  const MSG_SW_NETWORK_BODY_LINES_REPLY = 316
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -1095,6 +1097,9 @@
     if (cmd === MSG_SW_NETWORK_BODY_REPLY && payload && typeof payload === 'object') {
       handleNetworkBodyReply(payload)
     }
+    if (cmd === MSG_SW_NETWORK_BODY_LINES_REPLY && payload && typeof payload === 'object') {
+      handleNetworkBodyLinesReply(payload)
+    }
     if (cmd === MSG_SW_NETWORK_HOT_PROBE_REPLY && payload && typeof payload === 'object') {
       handleNetworkHotProbeReply(payload)
     }
@@ -1120,7 +1125,8 @@
 
     if (fatal && cmd !== 'VC_PING' && cmd !== 'VC_RELOAD') {
       if (cmd === 'VC_EVAL' || cmd === 'VC_CONSOLE_READ' || cmd === 'VC_NETWORK_READ' ||
-          cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT') {
+          cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_NETWORK_BODY_READ_LINES' ||
+          cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT') {
         const data = payload && typeof payload === 'object' ? payload : {}
         const id = typeof data.id === 'string' ? data.id : ''
         const resultCmd =
@@ -1128,8 +1134,9 @@
             : cmd === 'VC_CONSOLE_READ' ? 'VC_CONSOLE_READ_RESULT'
               : cmd === 'VC_NETWORK_READ' ? 'VC_NETWORK_READ_RESULT'
                 : cmd === 'VC_NETWORK_BODY_READ' ? 'VC_NETWORK_BODY_READ_RESULT'
-                  : cmd === 'VC_NETWORK_HOT_PROBE' ? 'VC_NETWORK_HOT_PROBE_RESULT'
-                    : 'VC_SCREENSHOT_RESULT'
+                  : cmd === 'VC_NETWORK_BODY_READ_LINES' ? 'VC_NETWORK_BODY_READ_LINES_RESULT'
+                    : cmd === 'VC_NETWORK_HOT_PROBE' ? 'VC_NETWORK_HOT_PROBE_RESULT'
+                      : 'VC_SCREENSHOT_RESULT'
         if (id) {
           postToParent(resultCmd, {
             id: id,
@@ -1179,6 +1186,9 @@
         break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
+        break
+      case 'VC_NETWORK_BODY_READ_LINES':
+        readNetworkBodyLines(payload)
         break
       case 'VC_NETWORK_HOT_PROBE':
         probeNetworkHot(payload)
@@ -2627,6 +2637,118 @@
           sessionId: sessionId,
         },
       ])
+    })
+  }
+
+  /** @type {Map<string, (payload: unknown) => void>} */
+  const networkBodyLinesWaiters = new Map()
+
+  /**
+   * @param {unknown} payload
+   */
+  function handleNetworkBodyLinesReply(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    if (!id || !networkBodyLinesWaiters.has(id)) {
+      return
+    }
+    const resolve = networkBodyLinesWaiters.get(id)
+    networkBodyLinesWaiters.delete(id)
+    if (typeof resolve === 'function') {
+      resolve(data)
+    }
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function readNetworkBodyLines(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    const entryId = typeof data.entryId === 'string' ? data.entryId : ''
+    const fromLine = typeof data.fromLine === 'number' ? data.fromLine : undefined
+    const toLine = typeof data.toLine === 'number' ? data.toLine : undefined
+    const metaOnly = !!data.metaOnly
+
+    function replyError(message, code) {
+      if (networkBodyLinesWaiters.has(id)) {
+        networkBodyLinesWaiters.delete(id)
+      }
+      postToParent('VC_NETWORK_BODY_READ_LINES_RESULT', {
+        id: id,
+        ok: false,
+        error: { message: message, code: code },
+      })
+    }
+
+    if (!id || !entryId) {
+      emitError('VC_NETWORK_BODY_READ_LINES requires id and entryId', 'NETWORK_BODY_BAD_REQUEST')
+      return
+    }
+
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        replyError('service worker not ready', 'NO_SW')
+        return
+      }
+
+      const timeoutId = setTimeout(function () {
+        if (!networkBodyLinesWaiters.has(id)) {
+          return
+        }
+        networkBodyLinesWaiters.delete(id)
+        replyError('body lines read timed out', 'NETWORK_BODY_TIMEOUT')
+      }, 30000)
+
+      networkBodyLinesWaiters.set(id, function (swPayload) {
+        clearTimeout(timeoutId)
+        networkBodyLinesWaiters.delete(id)
+        const swData = swPayload && typeof swPayload === 'object' ? swPayload : {}
+        if (!swData.ok) {
+          postToParent('VC_NETWORK_BODY_READ_LINES_RESULT', {
+            id: id,
+            ok: false,
+            error: swData.error || { message: 'read failed', code: 'NETWORK_BODY_READ_FAILED' },
+          })
+          return
+        }
+
+        const value = swData.value && typeof swData.value === 'object' ? swData.value : {}
+        postToParent('VC_NETWORK_BODY_READ_LINES_RESULT', {
+          id: id,
+          ok: true,
+          value: {
+            headers: value.headers || {},
+            status: typeof value.status === 'number' ? value.status : 0,
+            totalLines: typeof value.totalLines === 'number' ? value.totalLines : 0,
+            fromLine: typeof value.fromLine === 'number' ? value.fromLine : 0,
+            toLine: typeof value.toLine === 'number' ? value.toLine : 0,
+            lines: Array.isArray(value.lines) ? value.lines : [],
+            contentType: typeof value.contentType === 'string' ? value.contentType : undefined,
+            charset: typeof value.charset === 'string' ? value.charset : undefined,
+            rangeClamped: !!value.rangeClamped,
+          },
+        })
+      })
+
+      /** @type {Record<string, unknown>} */
+      const msg = {
+        id: id,
+        entryId: entryId,
+        sessionId: sessionId,
+      }
+      if (typeof fromLine === 'number') {
+        msg.fromLine = fromLine
+      }
+      if (typeof toLine === 'number') {
+        msg.toLine = toLine
+      }
+      if (metaOnly) {
+        msg.metaOnly = true
+      }
+
+      ctl.postMessage([MSG_PAGE_NETWORK_BODY_READ_LINES, msg])
     })
   }
 

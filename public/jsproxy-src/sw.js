@@ -1456,6 +1456,100 @@ global.addEventListener('message', e => {
   break
   }
 
+  case MSG.PAGE_NETWORK_BODY_READ_LINES: {
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  const sid =
+    val && typeof val.sessionId === 'string' && val.sessionId
+      ? val.sessionId
+      : srcSession
+  const metaOnly = !!(val && val.metaOnly)
+  const fromLine = val && typeof val.fromLine === 'number' ? val.fromLine : undefined
+  const toLine = val && typeof val.toLine === 'number' ? val.toLine : undefined
+
+  if (!entryId || !rpcId) {
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'entryId and id required', code: 'NETWORK_BODY_BAD_REQUEST' },
+    })
+    break
+  }
+
+  if (!metaOnly) {
+    const fl = typeof fromLine === 'number' ? Math.floor(fromLine) : 0
+    if (fl < 0) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'fromLine must be >= 0', code: 'NETWORK_BODY_BAD_RANGE' },
+      })
+      break
+    }
+    if (typeof toLine === 'number' && fl >= Math.floor(toLine)) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'fromLine must be < toLine', code: 'NETWORK_BODY_BAD_RANGE' },
+      })
+      break
+    }
+  }
+
+  netCache.getArchive(sid, entryId).then(async (res) => {
+    if (!res) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'body not found', code: 'NETWORK_BODY_NOT_FOUND' },
+      })
+      return
+    }
+    if (!(await netCache.isTextLikeResponse(res))) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: {
+          message: 'body is not text-like; use VC_NETWORK_BODY_READ',
+          code: 'NETWORK_BODY_NOT_TEXT',
+        },
+      })
+      return
+    }
+    const index = await netCache.getOrBuildTextLineIndex(sid, entryId, res)
+    const range = netCache.readTextLineRange(
+      index,
+      typeof fromLine === 'number' ? fromLine : 0,
+      typeof toLine === 'number' ? toLine : undefined,
+      metaOnly,
+    )
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: {
+        headers: index.headers,
+        status: index.status,
+        totalLines: index.totalLines,
+        fromLine: range.fromLine,
+        toLine: range.toLine,
+        lines: range.lines,
+        contentType: index.contentType,
+        charset: index.charset,
+        rangeClamped: range.rangeClamped || undefined,
+      },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'NETWORK_BODY_READ_FAILED' },
+    })
+  })
+  break
+  }
+
   case MSG.PAGE_NETWORK_ARCHIVE_DROP: {
   const dropSession = session.parseSessionFromUrl(src && src.url ? src.url : '').sessionId
   const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''

@@ -268,11 +268,12 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - 请求列表：method、URL、status、type、size、duration、pending、fromCache、bypass
 - **Request Headers**（随 entry 上报；序列化软上限约 32KB）
 - **Response Headers + Body**（`VC_NETWORK_BODY_READ`，archive 按 entryId；存储无单条上限；读出为流式前缀约 64KB）
+- **文本按行读取**（`VC_NETWORK_BODY_READ_LINES`：返回 `totalLines` + 指定行范围；大文本 Preview 无 64KB 整包上限，单请求仍有行数/体积软限）
 - **Referrer / Referrer Policy**
 - **Initiator**：fetch / XHR / dynamic import() 调用栈 + 多跳 URL 链；Parser 类资源用 referrer 链兜底
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
-- Preview：JSON 格式化、文本；图片/音视频等二进制占位不渲染；超大文本显示 Cache 前缀 + truncated 提示
+- Preview：JSON 格式化、文本（`VC_NETWORK_BODY_READ_LINES` 按需读行）；图片 base64（`VC_NETWORK_BODY_READ`）；音视频等二进制占位不渲染
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
@@ -308,7 +309,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 | Connection reuse / priority | 无 API | 不展示 |
 | Cookies 独立面板 | 未解析 Set-Cookie 树 | 可在 Response Headers 看原始头 |
 | WS 帧级详情 | 按 HTTP 记录，无帧协议 | 无 Frames Tab |
-| 超大文本整页展示 | 避免整包过桥 | Preview 流式读 Cache 前缀（约 64KB）+ truncated 提示 |
+| 超大文本整页展示 | 避免整包过桥 | Preview 通过 `VC_NETWORK_BODY_READ_LINES` 按行按需读取（无 64KB 整包上限；单请求最多 500 行 / 约 512KB 软限） |
 | 浏览器 HTTP disk/memory cache 状态 | 未接 Resource Timing | Served from「?」中说明 |
 
 ### 自检

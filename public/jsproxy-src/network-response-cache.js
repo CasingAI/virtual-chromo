@@ -17,6 +17,366 @@ export const MAX_BODY_BYTES = BODY_DISPLAY_MAX_BYTES
 /** Hot cache soft quota (bytes). */
 const HOT_QUOTA_BYTES = 50 * 1024 * 1024
 
+/** Max lines returned per VC_NETWORK_BODY_READ_LINES request. */
+export const MAX_LINES_PER_REQUEST = 500
+
+/** Max decoded characters per line (postMessage safety). */
+export const MAX_LINE_CHARS = 65536
+
+/** Soft UTF-16 char budget per lines response payload. */
+const MAX_RESPONSE_CHARS_SOFT = 512 * 1024
+
+/** In-memory text line index LRU capacity. */
+const TEXT_LINE_INDEX_LRU = 32
+
+/** Sample size for application/octet-stream text heuristic. */
+const OCTET_STREAM_TEXT_PROBE_BYTES = 8 * 1024
+
+/**
+ * @typedef {{
+ *   totalLines: number,
+ *   lineStarts: number[],
+ *   bodyBytes: Uint8Array,
+ *   charset?: string,
+ *   contentType?: string,
+ *   headers: Record<string, string>,
+ *   status: number,
+ *   at: number,
+ * }} TextLineIndex
+ */
+
+/** @type {Map<string, TextLineIndex>} */
+const mTextLineIndex = new Map()
+
+/**
+ * @param {string} sessionId
+ * @param {string} entryId
+ */
+function textLineIndexKey(sessionId, entryId) {
+  return `${sessionId}:${entryId}`
+}
+
+/**
+ * @param {string} key
+ * @param {TextLineIndex} index
+ */
+function touchTextLineIndex(key, index) {
+  mTextLineIndex.delete(key)
+  index.at = Date.now()
+  mTextLineIndex.set(key, index)
+  while (mTextLineIndex.size > TEXT_LINE_INDEX_LRU) {
+    const oldestKey = mTextLineIndex.keys().next().value
+    if (oldestKey) {
+      mTextLineIndex.delete(oldestKey)
+    } else {
+      break
+    }
+  }
+}
+
+/**
+ * @param {string} sessionId
+ * @param {string} entryId
+ */
+export function dropTextLineIndex(sessionId, entryId) {
+  mTextLineIndex.delete(textLineIndexKey(sessionId, entryId))
+}
+
+/**
+ * @param {string} sessionId
+ */
+export function dropTextLineIndexForSession(sessionId) {
+  const prefix = `${sessionId}:`
+  for (const key of [...mTextLineIndex.keys()]) {
+    if (key.startsWith(prefix)) {
+      mTextLineIndex.delete(key)
+    }
+  }
+}
+
+/**
+ * @param {Headers|Record<string, string>} headers
+ * @returns {{ contentType?: string, charset?: string }}
+ */
+export function parseContentTypeMeta(headers) {
+  let ctVal = ''
+  if (headers && typeof headers.forEach === 'function') {
+    headers.forEach((val, key) => {
+      if (key.toLowerCase() === 'content-type') {
+        ctVal = val
+      }
+    })
+  } else if (headers && typeof headers === 'object') {
+    for (const [key, val] of Object.entries(headers)) {
+      if (key.toLowerCase() === 'content-type' && typeof val === 'string') {
+        ctVal = val
+      }
+    }
+  }
+  const match = ctVal.toLocaleLowerCase().match(/([^;]*)(?:.*?charset=['"]?([^'";]+))?/)
+  const contentType = match && match[1] ? match[1].trim() : undefined
+  const charset = match && match[2] ? match[2].trim() : undefined
+  return { contentType, charset }
+}
+
+/**
+ * @param {string|undefined} contentType
+ */
+export function isTextLikeContentType(contentType) {
+  if (!contentType) {
+    return true
+  }
+  const mime = contentType.toLocaleLowerCase().trim()
+  if (mime.startsWith('text/')) {
+    return true
+  }
+  if (
+    mime === 'application/json' ||
+    mime === 'application/javascript' ||
+    mime === 'application/x-javascript' ||
+    mime === 'application/xml' ||
+    mime === 'application/xhtml+xml' ||
+    mime === 'image/svg+xml'
+  ) {
+    return true
+  }
+  if (mime === 'application/octet-stream') {
+    return null
+  }
+  return false
+}
+
+/**
+ * @param {Uint8Array} sample
+ */
+function isUtf8TextSample(sample) {
+  if (!sample || !sample.byteLength) {
+    return true
+  }
+  for (let i = 0; i < sample.byteLength; i++) {
+    if (sample[i] === 0) {
+      return false
+    }
+  }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(sample)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * @param {Response} res
+ * @returns {Promise<boolean>}
+ */
+export async function isTextLikeResponse(res) {
+  const { contentType } = parseContentTypeMeta(res.headers)
+  const verdict = isTextLikeContentType(contentType)
+  if (verdict === true) {
+    return true
+  }
+  if (verdict === false) {
+    return false
+  }
+  if (!res.body) {
+    return true
+  }
+  const reader = res.clone().body.getReader()
+  /** @type {Uint8Array[]} */
+  const chunks = []
+  let bytesRead = 0
+  try {
+    while (bytesRead < OCTET_STREAM_TEXT_PROBE_BYTES) {
+      const { done, value } = await reader.read()
+      if (done || !value || !value.byteLength) {
+        break
+      }
+      const remaining = OCTET_STREAM_TEXT_PROBE_BYTES - bytesRead
+      if (value.byteLength <= remaining) {
+        chunks.push(value)
+        bytesRead += value.byteLength
+      } else {
+        chunks.push(value.subarray(0, remaining))
+        bytesRead += remaining
+        break
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel()
+    } catch {
+      // ignore
+    }
+  }
+  let total = 0
+  for (const chunk of chunks) {
+    total += chunk.byteLength
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return isUtf8TextSample(merged)
+}
+
+/**
+ * @param {Response} res
+ * @returns {Promise<TextLineIndex>}
+ */
+export async function buildTextLineIndex(res) {
+  const headers = headersToObject(res.headers)
+  const status = res.status
+  const { contentType, charset } = parseContentTypeMeta(res.headers)
+  const decoderCharset = charset || 'utf-8'
+
+  /** @type {Uint8Array[]} */
+  const chunks = []
+  let totalBytes = 0
+
+  if (res.body) {
+    const reader = res.body.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break
+        }
+        if (value && value.byteLength) {
+          chunks.push(value)
+          totalBytes += value.byteLength
+        }
+      }
+    } finally {
+      try {
+        await reader.cancel()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const bodyBytes = util.concatBufs(chunks)
+  /** @type {number[]} */
+  const lineStarts = [0]
+  for (let i = 0; i < bodyBytes.byteLength; i++) {
+    if (bodyBytes[i] === 0x0a) {
+      lineStarts.push(i + 1)
+    }
+  }
+
+  return {
+    totalLines: Math.max(1, lineStarts.length),
+    lineStarts,
+    bodyBytes,
+    charset: decoderCharset,
+    contentType,
+    headers,
+    status,
+    at: Date.now(),
+  }
+}
+
+/**
+ * @param {TextLineIndex} index
+ * @param {number} fromLine
+ * @param {number} toLine
+ * @param {boolean} metaOnly
+ * @returns {{ lines: string[], fromLine: number, toLine: number, rangeClamped: boolean }}
+ */
+export function readTextLineRange(index, fromLine, toLine, metaOnly) {
+  const totalLines = index.totalLines
+  let rangeClamped = false
+  let startLine = typeof fromLine === 'number' && Number.isFinite(fromLine) ? Math.floor(fromLine) : 0
+  let endLine = typeof toLine === 'number' && Number.isFinite(toLine)
+    ? Math.floor(toLine)
+    : Math.min(startLine + MAX_LINES_PER_REQUEST, totalLines)
+
+  if (startLine < 0) {
+    startLine = 0
+    rangeClamped = true
+  }
+  if (startLine >= totalLines) {
+    startLine = totalLines
+    endLine = totalLines
+  }
+  if (endLine <= startLine && !metaOnly) {
+    return { lines: [], fromLine: startLine, toLine: startLine, rangeClamped }
+  }
+  if (endLine > totalLines) {
+    endLine = totalLines
+    rangeClamped = true
+  }
+  if (endLine - startLine > MAX_LINES_PER_REQUEST) {
+    endLine = startLine + MAX_LINES_PER_REQUEST
+    rangeClamped = true
+  }
+
+  if (metaOnly) {
+    return { lines: [], fromLine: startLine, toLine: endLine, rangeClamped }
+  }
+
+  const decoder = new TextDecoder(index.charset || 'utf-8', { fatal: false })
+  /** @type {string[]} */
+  const lines = []
+  let charBudget = MAX_RESPONSE_CHARS_SOFT
+
+  for (let lineNo = startLine; lineNo < endLine; lineNo++) {
+    const startByte = index.lineStarts[lineNo] ?? 0
+    let endByte = lineNo + 1 < index.lineStarts.length
+      ? index.lineStarts[lineNo + 1] - 1
+      : index.bodyBytes.byteLength
+    if (endByte > startByte && index.bodyBytes[endByte - 1] === 0x0d) {
+      endByte -= 1
+    }
+    let text = endByte > startByte
+      ? decoder.decode(index.bodyBytes.subarray(startByte, endByte))
+      : ''
+    if (text.length > MAX_LINE_CHARS) {
+      text = text.slice(0, MAX_LINE_CHARS)
+      rangeClamped = true
+    }
+    charBudget -= text.length
+    if (charBudget < 0) {
+      rangeClamped = true
+      break
+    }
+    lines.push(text)
+  }
+
+  const actualEndLine = startLine + lines.length
+  if (actualEndLine < endLine) {
+    rangeClamped = true
+  }
+
+  return {
+    lines,
+    fromLine: startLine,
+    toLine: actualEndLine,
+    rangeClamped,
+  }
+}
+
+/**
+ * @param {string} sessionId
+ * @param {string} entryId
+ * @param {Response} res
+ * @returns {Promise<TextLineIndex>}
+ */
+export async function getOrBuildTextLineIndex(sessionId, entryId, res) {
+  const key = textLineIndexKey(sessionId, entryId)
+  const cached = mTextLineIndex.get(key)
+  if (cached) {
+    touchTextLineIndex(key, cached)
+    return cached
+  }
+  const index = await buildTextLineIndex(res)
+  touchTextLineIndex(key, index)
+  return index
+}
+
 /**
  * @typedef {{ devtoolsId: string, disableCache: boolean, sessionId: string, at: number }} DevtoolsOpts
  */
@@ -283,6 +643,7 @@ export async function getArchive(sessionId, entryId) {
  * @param {string} entryId
  */
 export async function dropArchive(sessionId, entryId) {
+  dropTextLineIndex(sessionId, entryId)
   try {
     const cache = await caches.open(ARCHIVE_CACHE)
     await cache.delete(new Request(archiveRequestUrl(sessionId, entryId)))
@@ -417,6 +778,7 @@ export async function hasHot(sessionId, method, url) {
  * @param {string} sessionId
  */
 export async function destroySessionCaches(sessionId) {
+  dropTextLineIndexForSession(sessionId)
   const prefixArchive = `${VC_ORIGIN}/archive/${encodeURIComponent(sessionId)}/`
   const prefixHot = `${VC_ORIGIN}/hot/${encodeURIComponent(sessionId)}/`
 

@@ -63,6 +63,18 @@ export type NetworkBodyReadResult = {
   truncated?: boolean
 }
 
+export type NetworkBodyReadLinesResult = {
+  headers: Record<string, string>
+  status: number
+  totalLines: number
+  fromLine: number
+  toLine: number
+  lines: string[]
+  contentType?: string
+  charset?: string
+  rangeClamped?: boolean
+}
+
 export type NetworkOptions = {
   /** Parent-tab id for Disable cache isolation only (not part of hot cache key). */
   devtoolsId?: string
@@ -170,6 +182,20 @@ export function createChromoNetwork(
       return vcRpc<NetworkBodyReadResult>('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
         entryId,
       })
+    },
+
+    async readBodyLines(
+      entryId: string,
+      opts: { fromLine?: number; toLine?: number; metaOnly?: boolean } = {},
+    ): Promise<NetworkBodyReadLinesResult> {
+      return vcRpc<NetworkBodyReadLinesResult>(
+        'VC_NETWORK_BODY_READ_LINES_RESULT',
+        'VC_NETWORK_BODY_READ_LINES',
+        {
+          entryId,
+          ...opts,
+        },
+      )
     },
 
     clearLocal(): void {

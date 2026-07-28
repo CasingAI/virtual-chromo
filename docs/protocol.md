@@ -261,7 +261,41 @@ await vcRpc('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
 })
 ```
 
-成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有 session 总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。
+成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有 session 总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。**图片等二进制预览**继续用本 API（`encoding: 'base64'`）；大文本预览请用下方 `VC_NETWORK_BODY_READ_LINES`。
+
+### `VC_NETWORK_BODY_READ_LINES`
+
+按 network entry UUID **按需读取文本响应的行范围**（0-based 行号）。每次成功响应均含 `totalLines`，供 Monaco / 虚拟列表做滚动占位；协议不暴露 Cache 存储细节。
+
+```javascript
+await vcRpc('VC_NETWORK_BODY_READ_LINES_RESULT', 'VC_NETWORK_BODY_READ_LINES', {
+  id: 'rpc-1',
+  entryId: 'network-entry-uuid',
+  fromLine: 0,       // 可选，默认 0；0-based inclusive
+  toLine: 80,        // 可选，默认 min(fromLine + 500, totalLines)；0-based exclusive
+  metaOnly: false,   // 可选；true 时只返回元信息，lines 为 []
+})
+```
+
+成功时 `value` 含：
+
+| 字段 | 说明 |
+|------|------|
+| `headers` | 响应头（同 `VC_NETWORK_BODY_READ`） |
+| `status` | HTTP 状态码 |
+| `totalLines` | 正文按 `\n` 拆分后的总行数（空 body 为 1） |
+| `fromLine` | 实际返回区间起点（clamp 后，0-based inclusive） |
+| `toLine` | 实际返回区间终点（clamp 后，0-based exclusive） |
+| `lines` | `string[]`，每项为单行文本（不含行尾 `\n`；`\r\n` 已归一） |
+| `contentType?` | Content-Type MIME 部分 |
+| `charset?` | Content-Type charset |
+| `rangeClamped?` | 请求区间或单行长度被服务端截断 |
+
+**行号约定**：`fromLine` 0-based inclusive；`toLine` 0-based exclusive（等同 `lines.slice(fromLine, toLine)`）。单次最多返回 **500 行**；单行最多 **65536** 字符；单次 payload 软上限约 **512KB** UTF-16。
+
+**错误码**：`NETWORK_BODY_BAD_REQUEST`、`NETWORK_BODY_NOT_FOUND`、`NETWORK_BODY_NOT_TEXT`（二进制，请改用 `VC_NETWORK_BODY_READ`）、`NETWORK_BODY_BAD_RANGE`、`NETWORK_BODY_READ_FAILED`、`NETWORK_BODY_TIMEOUT`。
+
+**文本判定**（SW 内部，不暴露给协议）：`text/*`、`application/json|javascript|xml|xhtml+xml`、`image/svg+xml`；`application/octet-stream` 在前 8KB 无 `\0` 且 UTF-8 合法时视为文本。
 
 ## iframe → 父（事件）
 
@@ -543,7 +577,7 @@ entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`
 
 viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_build, vc_version }` 交换 build；不一致时 bridge 进入 Fatal 状态并上报 `VC_ERROR { code: 'VERSION_MISMATCH' }`。
 
-响应头与 body 仍通过 `VC_NETWORK_BODY_READ` 单独拉取。Initiator：页面侧 hook fetch/XHR，jsfilter 将 `import(` 改写为 `__vcImport(`；经 `PAGE_NETWORK_INITIATOR_TIP` + 请求头 `X-VC-Initiator-Id`（上游剥离）关联到 entry。Parser / 静态 import / passthrough 脚本仅有 referrer 链（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)）。
+响应头与 body 仍通过 `VC_NETWORK_BODY_READ`（二进制/小文本前缀）或 `VC_NETWORK_BODY_READ_LINES`（大文本按行）单独拉取。Initiator：页面侧 hook fetch/XHR，jsfilter 将 `import(` 改写为 `__vcImport(`；经 `PAGE_NETWORK_INITIATOR_TIP` + 请求头 `X-VC-Initiator-Id`（上游剥离）关联到 entry。Parser / 静态 import / passthrough 脚本仅有 referrer 链（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)）。
 
 **source 取值**（替代 Chrome Remote Address，标明响应从哪来）：
 
