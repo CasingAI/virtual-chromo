@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v9'
+  var VC_BUILD = '20260728-v10'
 
   if (window.__vcInjected) {
     return
@@ -267,9 +267,14 @@
         return
       }
       event.preventDefault()
+      var httpMethod = String(form.method || 'get').toLowerCase()
+      if (httpMethod !== 'get' && httpMethod !== 'post') {
+        httpMethod = 'get'
+      }
       forwardInject('LOCATION', {
         ts: Date.now(),
         method: 'submit',
+        httpMethod: httpMethod,
         url: buildFormSubmitUrl(form),
       })
     },

@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v9'
+  const BUILD = '20260728-v10'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -1203,6 +1203,7 @@
     }
     currentContentUrl = url
     recordHistory('navigate', url)
+    clearConsoleBufferForNavigation()
     emitNavigating(url)
     emitLoading(true)
     contentFrame.src = toProxyUrl(url)
@@ -1271,6 +1272,11 @@
   function reloadContent() {
     if (!contentFrame) {
       return
+    }
+    const navUrl = currentContentUrl || ''
+    clearConsoleBufferForNavigation()
+    if (navUrl) {
+      emitNavigating(navUrl)
     }
     emitLoading(true)
 
@@ -2175,12 +2181,17 @@
     if (!payload || typeof payload !== 'object') {
       return
     }
-    const data = /** @type {{ ts?: number, method?: string, url?: string, target?: string }} */ (
-      payload
-    )
+    const data =
+      /** @type {{ ts?: number, method?: string, httpMethod?: string, url?: string, target?: string }} */ (
+        payload
+      )
+    const httpMethod =
+      typeof data.httpMethod === 'string' ? data.httpMethod.toLowerCase() : undefined
     postToParent('VC_LOCATION', {
       ts: typeof data.ts === 'number' ? data.ts : Date.now(),
       method: typeof data.method === 'string' ? data.method : 'unknown',
+      httpMethod:
+        httpMethod === 'get' || httpMethod === 'post' ? httpMethod : undefined,
       url: typeof data.url === 'string' ? data.url : '',
       target: typeof data.target === 'string' ? data.target : undefined,
     })
@@ -2288,6 +2299,15 @@
     flushConsoleNotify(entry.id)
   }
 
+  /** Drop page console ring on document navigation/reload (Chromo「保留日志」只保留已拉取副本). */
+  function clearConsoleBufferForNavigation() {
+    if (consoleBuffer.length === 0 && consolePendingNotifyCount === 0) {
+      return
+    }
+    consoleBuffer.length = 0
+    consolePendingNotifyCount = 0
+  }
+
   /**
    * @param {string} latestId
    */
@@ -2326,7 +2346,8 @@
     let startIndex = 0
     if (after) {
       const idx = consoleBuffer.findIndex((entry) => entry.id === after)
-      startIndex = idx >= 0 ? idx + 1 : 0
+      // Cursor missing (buffer rotated): do not resend the whole buffer — empty delta.
+      startIndex = idx >= 0 ? idx + 1 : consoleBuffer.length
     }
 
     const entries = consoleBuffer.slice(startIndex, startIndex + limit)
@@ -2715,7 +2736,8 @@
     let startIndex = 0
     if (after) {
       const idx = networkBuffer.findIndex((entry) => entry.id === after)
-      startIndex = idx >= 0 ? idx + 1 : 0
+      // Cursor missing (buffer rotated): do not resend the whole buffer — empty delta.
+      startIndex = idx >= 0 ? idx + 1 : networkBuffer.length
     }
 
     const entries = networkBuffer.slice(startIndex, startIndex + limit)
@@ -2861,6 +2883,9 @@
    * rewrite it back through the /----- proxy path.
    * @returns {boolean}
    */
+  /** @type {{ url: string, count: number, at: number }} */
+  let recoverGuard = { url: '', count: 0, at: 0 }
+
   function recoverEscapedContent() {
     if (!contentFrame) {
       return false
@@ -2871,8 +2896,26 @@
       return false
     }
 
+    const now = Date.now()
+    if (recoverGuard.url === escapedUrl && now - recoverGuard.at < 4000) {
+      recoverGuard.count += 1
+      if (recoverGuard.count >= 2) {
+        // chrome-error / failed nav → recover → fail again = infinite flicker
+        emitLoadFailed(
+          escapedUrl,
+          '页面反复加载失败（上游拒绝或错误页循环）。若来自 POST 表单，当前仅支持 GET 导航。',
+          'LOAD_RECOVER_LOOP',
+        )
+        emitLoading(false)
+        return true
+      }
+    } else {
+      recoverGuard = { url: escapedUrl, count: 1, at: now }
+    }
+
     currentContentUrl = escapedUrl
     recordHistory('recover', escapedUrl)
+    clearConsoleBufferForNavigation()
     emitNavigating(escapedUrl)
     emitLoading(true)
     contentFrame.src = toProxyUrl(escapedUrl)

@@ -333,10 +333,13 @@ Service Worker 注册完成，bridge 可接收导航命令。
 ```javascript
 // ['VC_LOCATION', {
 //   ts: 1730000000000,
-//   method: 'assign',
+//   method: 'assign',       // 'assign' | 'replace' | 'reload' | 'open' | 'submit' | ...
+//   httpMethod: 'post',     // 仅 method==='submit' 时可选：'get' | 'post'
 //   url: 'https://example.com/page#section',
 // }]
 ```
+
+`method: 'submit'` 且 `httpMethod: 'post'` 时，父级**不应**用普通 `VC_NAVIGATE`（GET）打开目标：被动导航无法附带表单 body，会打挂仅接受 POST 的页面，并可能触发 iframe 错误页 ↔ 代理恢复的闪烁循环（build `20260728-v10`+ Chromo 会拦截并提示）。
 
 ### `VC_HISTORY`
 

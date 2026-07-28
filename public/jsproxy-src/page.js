@@ -682,9 +682,14 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     } catch {
       // keep submitUrl/action
     }
+    let httpMethod = String(this.method || 'get').toLowerCase()
+    if (httpMethod !== 'get' && httpMethod !== 'post') {
+      httpMethod = 'get'
+    }
     vcReport.reportLocation({
       ts: Date.now(),
       method: 'submit',
+      httpMethod,
       url,
     })
   })

@@ -99,6 +99,8 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 |----------|------|
 | 真鼠标点 `<a href>` | `VC_CLICK` + `preventDefault` |
 | `element.click()` / `location.assign` / `window.open` | `VC_CLICK` 或 `VC_LOCATION`，不跳转 |
+| 表单 `submit`（GET） | `VC_LOCATION { method:'submit', httpMethod:'get' }`；父级可 `VC_NAVIGATE` |
+| 表单 `submit`（POST） | 同上但 `httpMethod:'post'`；**当前 Chromo 不自动导航**（无法附带 body），避免 GET 打挂仅接受 POST 的页并触发恢复死循环 |
 | `VC_EVAL` 内上述操作 | 同上（eval 也不能偷偷导航） |
 | 父级 `VC_NAVIGATE` | 唯一换页入口 |
 
