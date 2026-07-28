@@ -82,6 +82,13 @@ jsproxy [`page.js`](../public/jsproxy-src/page.js) ~367 行 hook 了 `Window.pro
 
 调试面板「通讯」里 eval 后应出现 `-> 上报 VC_CONSOLE_UPDATED`；父项目监听该事件并用 `VC_CONSOLE_READ` 增量拉取。
 
+Chromo DevTools 控制台（build `20260728-v9`+ / instant-app 同步）：
+
+1. 切到 **错误** 过滤器后输入 `1+1`：仍应看到 `> 1+1` 与结果 `2`（REPL 不受级别过滤器隐藏）
+2. `await Promise.resolve(42)` 应返回 `42`（顶层 await）
+3. `document.title` 应返回当前页标题字符串
+4. `throw new Error('test')` 应显示错误信息
+
 ---
 
 ## 被动导航（build `20260727-v15`+）
@@ -303,7 +310,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 ### 自检
 
-1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v8`+）
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v9`+）
 2. Network 点选请求：Headers 三区（General / Response / Request）可见
 3. 选中 hasBody 请求：Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
 4. 同 session 刷新后同 URL：第二次应出现 `cache` badge / `DevTools memory cache`

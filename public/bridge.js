@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v8'
+  const BUILD = '20260728-v9'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -1318,6 +1318,31 @@
   }
 
   /**
+   * Eval code in the content page context (Chrome-like REPL).
+   * Prefer expression mode: `(async () => { return (code); })()`
+   * Fall back to statement mode on SyntaxError: `(async () => { code })()`
+   * Enables top-level await and expression return values.
+   *
+   * @param {Window} win
+   * @param {string} code
+   * @returns {unknown}
+   */
+  function evalInPageContext(win, code) {
+    const trimmed = String(code)
+    try {
+      return win.eval('(async () => { return (\n' + trimmed + '\n); })()')
+    } catch (err) {
+      const isSyntax =
+        (err && typeof err === 'object' && /** @type {{ name?: string }} */ (err).name === 'SyntaxError') ||
+        err instanceof SyntaxError
+      if (!isSyntax) {
+        throw err
+      }
+      return win.eval('(async () => {\n' + trimmed + '\n})()')
+    }
+  }
+
+  /**
    * @param {unknown} payload
    */
   async function evalInContent(payload) {
@@ -1368,7 +1393,7 @@
     }
 
     try {
-      const raw = win.eval(code)
+      const raw = evalInPageContext(win, code)
       const value = await resolveMaybePromise(raw)
       postToParent('VC_EVAL_RESULT', {
         id,

@@ -140,9 +140,12 @@ iframe.contentWindow.postMessage(['VC_EVAL', {
 
 说明：
 
-- 代码通过子页面 `window.eval()` 执行，可写表达式或多行语句
+- **执行包装（build `20260728-v9`+）**：优先按表达式模式包装为 `(async () => { return (code); })()`，若抛出 `SyntaxError` 则回退到语句模式 `(async () => { code })()`。因此：
+  - 支持类似 Chrome 的顶层 `await`
+  - 单表达式（如 `1+1`、`document.title`）会作为返回值回传
+  - 多语句需自行 `return` 最后一式，或写成表达式
 - 若返回值是 `Promise`，会等待 resolve 后再回传
-- 返回值经 JSON 序列化；无法序列化的类型会包装为 `{ __vc: ... }`
+- 返回值经 JSON 序列化；无法序列化的类型会包装为 `{ __vc: ... }`（如 `undefined` / `function` / `unserializable`）
 - 子页面尚未加载完成时返回 `EVAL_NO_CONTENT`
 
 **推荐用法**（父项目侧 helper + `await`）：
