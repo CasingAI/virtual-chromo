@@ -36,6 +36,21 @@ virtual-chromo-specific layers (`public/bridge.js`, `public/inject.js`, `public/
 
 ---
 
+## vConsole (MIT)
+
+- **Project:** [Tencent/vConsole](https://github.com/Tencent/vConsole)
+- **Copyright:** Copyright (C) 2017 THL A29 Limited, a Tencent company
+- **License:** MIT
+- **Version:** 3.15.1
+
+**Used in this repository:**
+
+| Path | Notes |
+|------|--------|
+| `public/vendor/vconsole.min.js` | Dist build; loaded into proxied pages when instant-app DevTools Extensions enables vConsole |
+
+---
+
 ## MIT License Text (EtherDream / jsproxy & jsproxy-browser)
 
 ```

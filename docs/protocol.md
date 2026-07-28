@@ -244,6 +244,19 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 
 > **后续 TODO**（存储管理 API，对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS` / `VC_NETWORK_CACHE_CLEAR` / `VC_NETWORK_CACHE_LIST` — 查询 hot/archive 占用、按层清空、调试列出 hot key。当前清除仍走 `VC_SESSION_DESTROY` → `destroySessionCaches`。
 
+### `VC_DEBUG_PANEL`
+
+显示 / 隐藏 viewer 内置 DebugPanel（左下角绿色「调」圆钮，Log / Messages / Network / State）。**默认隐藏**；由 instant-app DevTools → Extensions 开关控制。不需要 RPC 响应。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_DEBUG_PANEL', {
+  enabled: true,
+}], '*')
+```
+
+- 面板挂在 **viewer**（非代理页），导航不会销毁；关闭 `enabled` 时收起面板并隐藏圆钮
+- 与页内 vConsole 并存时：DebugPanel 在左下，vConsole 在右下，避免重叠
+
 ### `VC_NETWORK_BODY_READ`
 
 按 network entry UUID 读取**不可变**响应快照（archive 层，与 URL 无关）。

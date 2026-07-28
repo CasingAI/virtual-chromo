@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v10'
+  const BUILD = '20260728-v11'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -493,13 +493,15 @@
 
       const style = document.createElement('style')
       style.textContent =
-        '.vcd-root{position:fixed;right:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
+        '.vcd-root{position:fixed;left:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
+        '.vcd-root[hidden]{display:none!important}' +
         '.vcd-root *{box-sizing:border-box}' +
         '.vcd-switch{pointer-events:auto;width:36px;height:36px;padding:0;border:0;border-radius:18px;background:#2f9e44;color:#fff;font-size:12px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer;position:relative}' +
         '.vcd-switch:active{transform:scale(.96)}' +
         '.vcd-badge{position:absolute;top:-3px;right:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:#e03131;color:#fff;font-size:9px;line-height:14px;text-align:center}' +
         /* hidden must win over display:flex — this was why close did nothing */
-        '.vcd-panel{pointer-events:auto;position:absolute;right:0;bottom:44px;width:min(88vw,320px);height:min(52vh,380px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
+        /* left-aligned to avoid colliding with page-side vConsole (bottom-right) */
+        '.vcd-panel{pointer-events:auto;position:absolute;left:0;bottom:44px;width:min(88vw,320px);height:min(52vh,380px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
         '.vcd-panel.vcd-panel--open,.vcd-panel:not([hidden]){display:flex}' +
         '.vcd-panel[hidden]{display:none!important}' +
         '.vcd-panel__head{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#25262b;border-bottom:1px solid #343a40}' +
@@ -604,8 +606,26 @@
         return
       }
       buildUi()
+      // Hidden until parent enables via VC_DEBUG_PANEL (Extensions tab).
+      root.hidden = true
       hookConsole()
       addLog('info', ['debug panel ready', versionLabel || ''])
+    }
+
+    /**
+     * @param {boolean} enabled
+     */
+    function setVisible(enabled) {
+      if (!root) {
+        init({})
+      }
+      if (!root) {
+        return
+      }
+      root.hidden = !enabled
+      if (!enabled) {
+        setPanelOpen(false)
+      }
     }
 
     /**
@@ -617,6 +637,7 @@
 
     return {
       init,
+      setVisible,
       log: function () {
         addLog('log', Array.from(arguments))
       },
@@ -1173,6 +1194,9 @@
         break
       case 'VC_NETWORK_OPTIONS':
         applyNetworkOptions(payload)
+        break
+      case 'VC_DEBUG_PANEL':
+        applyDebugPanelOptions(payload)
         break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
@@ -2418,6 +2442,16 @@
       networkDisableCache = data.disableCache
     }
     postNetworkOptsToSw()
+  }
+
+  /**
+   * Show/hide viewer DebugPanel (green「调」button). Default hidden.
+   * @param {unknown} payload
+   */
+  function applyDebugPanelOptions(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const enabled = data.enabled === true
+    DebugPanel.setVisible(enabled)
   }
 
   function dropArchiveEntry(entryId) {

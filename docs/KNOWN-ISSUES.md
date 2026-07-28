@@ -325,6 +325,32 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 ---
 
+## Extensions / 页内 vConsole 与 DebugPanel
+
+instant-app Chromo DevTools 的 **扩展** Tab 可启用两类调试 UI：
+
+### Chromo 调试面板（viewer「调」圆钮）
+
+- 协议：`VC_DEBUG_PANEL { enabled }`（build `20260728-v11`+）
+- **默认隐藏**；Extensions 开关打开后显示在 **viewer 左下角**
+- 挂在 viewer，不随页面导航销毁；viewer 重建（`VC_READY`）后由 instant-app 按 tab 状态恢复
+- 与页内 vConsole 并存时：DebugPanel 左下、vConsole 右下
+
+### vConsole（代理页内）
+
+- 开启：父页 `VC_EVAL` 加载 Worker 托管的 [`public/vendor/vconsole.min.js`](../public/vendor/vconsole.min.js)，再 `new VConsole()`
+- 关闭：`destroy()` + 移除 `#__vconsole`
+- **导航 / reload** 后若开关仍为 on，约 300ms 自动重注入
+- Console 双重 hook：Chromo `inject.js` 与 vConsole 均可能 hook `console.*`
+
+### 自检
+
+1. DevTools → 扩展：默认两开关均为关，页面无绿钮
+2. 开启「Chromo 调试面板」→ viewer 左下出现「调」
+3. 开启 vConsole → 代理页右下出现绿色按钮；关闭后浮层消失
+
+---
+
 ## 长期修复方向（PLAN 阶段 3）
 
 - [x] 用 `jsproxy-src` + `bundle.built.js` 替换黑盒 `bundle.js`（进行中）
