@@ -102,6 +102,13 @@ async function fetchHandler(request, env) {
           new Request(new URL('/viewer', urlObj.origin), request),
         ),
       )
+    case '/blank.html':
+    case '/blank':
+      return withNoStore(
+        await env.ASSETS.fetch(
+          new Request(new URL('/blank.html', urlObj.origin), request),
+        ),
+      )
     case '/bridge.js':
     case '/inject.js':
     case '/sw.js':

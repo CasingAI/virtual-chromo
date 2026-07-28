@@ -140,6 +140,7 @@
       }
 
       window.__vcShowFatal = showFatal
+      window.__vcShowBoot = showBoot
       fatalReload.addEventListener('click', function () {
         navigator.serviceWorker
           .getRegistration()
@@ -246,7 +247,7 @@
           return
         }
 
-        sw.register('/sw.js?b=20260728-v16')
+        sw.register('/sw.js?b=20260728-v18')
           .then(function (reg) {
             watchForUpdates(reg)
             return onSwReady()

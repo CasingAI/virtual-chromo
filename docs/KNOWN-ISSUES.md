@@ -275,9 +275,11 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 [`public/viewer.html`](../public/viewer.html) + [`public/bridge.js`](../public/bridge.js)：
 
 - **不再**周期性 `fetch('/bridge.js')` 或 `reg.update()` 轮询
-- bridge 在 `swDidReady` / `controllerchange` 时向 SW 查询 `VC_BUILD`；不一致则进入 **Fatal 崩溃页**（说明 +「重新加载」按钮），并 `VC_ERROR { code: 'VERSION_MISMATCH' }`
+- bridge 在 `swDidReady` / `controllerchange` 时向 SW 查询 `VC_BUILD`
+- **空白页 / 未导航**：版本不一致时 **静默** SW 更新 + reload（不弹 Fatal、不上报 `VC_ERROR`）；`sessionStorage` 限制最多 3 次（build `20260728-v18`+）
+- **已加载真实页面**：不一致则进入 **Fatal 崩溃页**（说明 +「重新加载」按钮），并 `VC_ERROR { code: 'VERSION_MISMATCH' }`
 - **`viewer.html` 内 `sw.register('...?b=' + VC_BUILD)` 必须与 `bridge.js` / `conf.js` 同步**；漏改时浏览器可能仍跑旧 SW，导航会卡住或 Fatal 后 Chromo 标签仍显示「正在加载…」（build `20260728-v8`+ bridge 会在 Fatal/超时/SW 未就绪时强制 `VC_LOADING false`）
-- SW 更新仍走 `skipWaiting` + activate；激活后由 Fatal 页提示用户手动重载，不自动 silent reload
+- 新标签起始页：`/blank.html`（无导航时自动加载；逻辑 URL 为空）
 
 ### 无法实现或仅占位
 

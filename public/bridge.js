@@ -7,7 +7,9 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v16'
+  const BUILD = '20260728-v18'
+  /** New-tab start page (Worker static asset); not a proxied site. */
+  const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
   const MSG_SW_NETWORK_PUSH = 305
   const MSG_PAGE_NETWORK_OPTS = 306
@@ -806,6 +808,36 @@
   /** @type {boolean} */
   let fatal = false
 
+  /** VERSION_MISMATCH silent recover attempts while still on blank / no page. */
+  const MAX_SILENT_VERSION_RECOVER = 3
+  const SILENT_VER_STORAGE_KEY = '_vc_silent_ver'
+
+  /**
+   * @returns {number}
+   */
+  function readSilentVersionRecoverAttempts() {
+    try {
+      return Math.max(0, +sessionStorage.getItem(SILENT_VER_STORAGE_KEY) || 0)
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * @param {number} n
+   */
+  function writeSilentVersionRecoverAttempts(n) {
+    try {
+      if (n <= 0) {
+        sessionStorage.removeItem(SILENT_VER_STORAGE_KEY)
+      } else {
+        sessionStorage.setItem(SILENT_VER_STORAGE_KEY, String(n))
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   /** @type {{ url: string, method?: string, body?: string }|null} */
   let pendingNavigateRequest = null
 
@@ -1005,8 +1037,41 @@
       if (queued) {
         vlog('info', ['flushing queued navigate:', queued.url])
         applyNavigateRequest(queued)
+        return
+      }
+      if (!currentContentUrl) {
+        showBlankPage()
       }
     })
+  }
+
+  /** Load the new-tab blank page into #content (no proxy, address bar stays empty). */
+  function showBlankPage() {
+    if (!contentFrame || fatal) {
+      return
+    }
+    try {
+      const blankHref = new URL(BLANK_PATH, location.href).href
+      const src = contentFrame.getAttribute('src') || ''
+      if (
+        src.includes('/blank.html') ||
+        /(^|\/)blank(?:\.html)?(?:\?|#|$)/.test(src)
+      ) {
+        return
+      }
+      try {
+        const win = contentFrame.contentWindow
+        const path = win && win.location && win.location.pathname
+        if (path === '/blank' || path === '/blank.html') {
+          return
+        }
+      } catch {
+        // ignore cross-origin / unloaded
+      }
+      contentFrame.src = blankHref
+    } catch (err) {
+      vlog('warn', ['showBlankPage failed', err])
+    }
   }
 
   function swDidReady() {
@@ -1074,19 +1139,90 @@
   }
 
   /**
+   * True when no real site has been navigated yet (new tab / blank start page).
+   * @returns {boolean}
+   */
+  function isIdleBlankState() {
+    if (currentContentUrl) {
+      return false
+    }
+    if (!contentFrame) {
+      return true
+    }
+    if (isBlankContentFrame()) {
+      return true
+    }
+    const src = contentFrame.getAttribute('src') || contentFrame.src || ''
+    return !src || src === 'about:blank'
+  }
+
+  /**
+   * Soft-reload viewer after SW update without notifying the parent (blank tab only).
    * @param {{ code?: string, message?: string, bridgeBuild?: string, swBuild?: string }} info
    */
-  function enterFatalState(info) {
+  function silentRecoverVersionMismatch(info) {
+    const attempts = readSilentVersionRecoverAttempts() + 1
+    writeSilentVersionRecoverAttempts(attempts)
+    vlog('warn', [
+      'version mismatch on blank; silent recover',
+      attempts + '/' + MAX_SILENT_VERSION_RECOVER,
+      'bridge:',
+      info.bridgeBuild || BUILD,
+      'SW:',
+      info.swBuild || '(unknown)',
+    ])
+    if (attempts > MAX_SILENT_VERSION_RECOVER) {
+      enterFatalState(info, { force: true })
+      return
+    }
+    emitLoading(false)
+    if (typeof window.__vcShowBoot === 'function') {
+      window.__vcShowBoot('正在更新代理…')
+    }
+    const finish = function () {
+      location.reload()
+    }
+    navigator.serviceWorker
+      .getRegistration()
+      .then(function (reg) {
+        if (!reg) {
+          return
+        }
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+        }
+        return reg.update().then(function () {
+          if (reg.waiting) {
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+          }
+        })
+      })
+      .catch(function () {
+        // still reload
+      })
+      .then(finish)
+  }
+
+  /**
+   * @param {{ code?: string, message?: string, bridgeBuild?: string, swBuild?: string }} info
+   * @param {{ force?: boolean }} [opts]
+   */
+  function enterFatalState(info, opts) {
     if (fatal) {
       return
     }
+    const code = (info && info.code) || 'VERSION_MISMATCH'
+    const force = opts && opts.force
+    if (!force && code === 'VERSION_MISMATCH' && isIdleBlankState()) {
+      silentRecoverVersionMismatch(info || {})
+      return
+    }
     fatal = true
-    const bridgeBuild = info.bridgeBuild || BUILD
-    const swBuild = info.swBuild || ''
+    const bridgeBuild = (info && info.bridgeBuild) || BUILD
+    const swBuild = (info && info.swBuild) || ''
     const message =
-      info.message ||
+      (info && info.message) ||
       ('版本不匹配：bridge ' + bridgeBuild + ' vs SW ' + (swBuild || '(unknown)'))
-    const code = info.code || 'VERSION_MISMATCH'
     vlog('error', [message, code])
     currentContentUrl = ''
     emitLoading(false)
@@ -1134,6 +1270,7 @@
         return true
       }
       if (swBuild === BUILD) {
+        writeSilentVersionRecoverAttempts(0)
         return true
       }
       enterFatalState({
@@ -3586,10 +3723,21 @@
         return false
       }
       const href = win.location.href
-      return href === 'about:blank' || href.endsWith('/blank')
+      const path = win.location.pathname || ''
+      return (
+        href === 'about:blank' ||
+        path === '/blank' ||
+        path === '/blank.html' ||
+        path.endsWith('/blank') ||
+        path.endsWith('/blank.html')
+      )
     } catch {
       const src = contentFrame.getAttribute('src') || contentFrame.src || ''
-      return src === 'about:blank'
+      return (
+        src === 'about:blank' ||
+        src.includes('/blank.html') ||
+        /\/blank(?:\?|#|$)/.test(src)
+      )
     }
   }
 
@@ -3649,6 +3797,28 @@
   function onContentLoad() {
     if (fatal) {
       emitLoading(false)
+      return
+    }
+
+    if (isBlankContentFrame()) {
+      // Start page: keep logical URL empty so parent omnibox stays blank.
+      currentContentUrl = ''
+      emitLoading(false)
+      let title = '新标签页'
+      try {
+        const doc = contentFrame && contentFrame.contentDocument
+        if (doc && doc.title) {
+          title = doc.title
+        }
+      } catch {
+        // ignore
+      }
+      postToParent('VC_NAVIGATED', {
+        url: '',
+        title: title,
+        canGoBack: false,
+        canGoForward: false,
+      })
       return
     }
 
@@ -3850,7 +4020,16 @@
    * @param {string} path
    */
   function fromProxyPath(path) {
-    if (!path || path === '/' || path === '/viewer.html' || path === '/viewer') {
+    if (
+      !path ||
+      path === '/' ||
+      path === '/viewer.html' ||
+      path === '/viewer' ||
+      path === '/blank' ||
+      path === '/blank.html' ||
+      path.startsWith('/blank?') ||
+      path.startsWith('/blank.html?')
+    ) {
       return ''
     }
     // Legacy bookmarks: /s/<sessionId>/-----https://...
