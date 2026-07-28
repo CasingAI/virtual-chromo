@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v14'
+  const BUILD = '20260728-v16'
   const PROXY_PREFIX = '/-----'
   const MSG_SW_NETWORK_PUSH = 305
   const MSG_PAGE_NETWORK_OPTS = 306
@@ -1252,7 +1252,11 @@
         historyStep(1)
         break
       case 'VC_RELOAD':
-        reloadContent()
+        if (fatal) {
+          recoverFromFatal()
+        } else {
+          reloadContent()
+        }
         break
       case 'VC_STOP':
         stopContent()
@@ -1490,6 +1494,39 @@
         'HISTORY_ERROR'
       )
     }
+  }
+
+  /**
+   * Fatal recover: update viewer SW then reload this viewer document
+   * (not Instant OS). Mirrors viewer.html #fatal-reload.
+   */
+  function recoverFromFatal() {
+    function reloadViewer() {
+      location.reload()
+    }
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistration) {
+      reloadViewer()
+      return
+    }
+    navigator.serviceWorker
+      .getRegistration()
+      .then(function (reg) {
+        if (!reg) {
+          return
+        }
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+        }
+        return reg.update().then(function () {
+          if (reg.waiting) {
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+          }
+        })
+      })
+      .catch(function () {
+        // ignore — still reload below
+      })
+      .then(reloadViewer)
   }
 
   function reloadContent() {
