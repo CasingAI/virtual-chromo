@@ -3,6 +3,13 @@
  *   instant-app/src/apps/chromo/chromo-network.ts
  *
  * Network DevTools helper (VC_NETWORK_UPDATED + VC_NETWORK_READ + body cache).
+ *
+ * Hot cache (SW `vc-net-hot`) is session-scoped: key = sessionId + method + url
+ * (normalized). Redirects keep the original request URL as the hot key.
+ * `devtoolsId` only binds Disable cache; it is not part of the hot key.
+ * First eligible GET writes but does not hit (`hotStored` may be true);
+ * subsequent same-URL GETs in the same session may return fromCache / source: 'cache'.
+ * Use VC_NETWORK_HOT_PROBE to check whether SW already has an entry for a URL.
  */
 
 export type NetworkTiming = {
@@ -28,6 +35,8 @@ export type NetworkEntry = {
   bypass: boolean
   pending?: boolean
   hasBody?: boolean
+  /** Whether this response was written to session hot cache. */
+  hotStored?: boolean
   fromCache?: boolean
   devtoolsId?: string
   requestHeaders?: Record<string, string>
@@ -55,6 +64,7 @@ export type NetworkBodyReadResult = {
 }
 
 export type NetworkOptions = {
+  /** Parent-tab id for Disable cache isolation only (not part of hot cache key). */
   devtoolsId?: string
   disableCache?: boolean
 }

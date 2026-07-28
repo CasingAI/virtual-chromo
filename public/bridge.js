@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v4'
+  const BUILD = '20260728-v7'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -19,6 +19,8 @@
   const MSG_PAGE_NETWORK_ARCHIVE_DROP = 309
   const MSG_PAGE_BUILD_GET = 310
   const MSG_SW_BUILD_REPLY = 311
+  const MSG_PAGE_NETWORK_HOT_PROBE = 312
+  const MSG_SW_NETWORK_HOT_PROBE_REPLY = 313
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -956,6 +958,8 @@
       ('版本不匹配：bridge ' + bridgeBuild + ' vs SW ' + (swBuild || '(unknown)'))
     const code = info.code || 'VERSION_MISMATCH'
     vlog('error', [message, code])
+    currentContentUrl = ''
+    emitLoading(false)
     if (contentFrame) {
       try {
         contentFrame.src = 'about:blank'
@@ -1035,6 +1039,9 @@
     if (cmd === MSG_SW_NETWORK_BODY_REPLY && payload && typeof payload === 'object') {
       handleNetworkBodyReply(payload)
     }
+    if (cmd === MSG_SW_NETWORK_HOT_PROBE_REPLY && payload && typeof payload === 'object') {
+      handleNetworkHotProbeReply(payload)
+    }
   }
 
   /**
@@ -1057,7 +1064,7 @@
 
     if (fatal && cmd !== 'VC_PING' && cmd !== 'VC_RELOAD') {
       if (cmd === 'VC_EVAL' || cmd === 'VC_CONSOLE_READ' || cmd === 'VC_NETWORK_READ' ||
-          cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_SCREENSHOT') {
+          cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT') {
         const data = payload && typeof payload === 'object' ? payload : {}
         const id = typeof data.id === 'string' ? data.id : ''
         const resultCmd =
@@ -1065,7 +1072,8 @@
             : cmd === 'VC_CONSOLE_READ' ? 'VC_CONSOLE_READ_RESULT'
               : cmd === 'VC_NETWORK_READ' ? 'VC_NETWORK_READ_RESULT'
                 : cmd === 'VC_NETWORK_BODY_READ' ? 'VC_NETWORK_BODY_READ_RESULT'
-                  : 'VC_SCREENSHOT_RESULT'
+                  : cmd === 'VC_NETWORK_HOT_PROBE' ? 'VC_NETWORK_HOT_PROBE_RESULT'
+                    : 'VC_SCREENSHOT_RESULT'
         if (id) {
           postToParent(resultCmd, {
             id: id,
@@ -1114,6 +1122,9 @@
         break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
+        break
+      case 'VC_NETWORK_HOT_PROBE':
+        probeNetworkHot(payload)
         break
       case 'VC_SESSION_CREATE':
         createSession(payload)
@@ -2343,6 +2354,9 @@
     const entryId = typeof data.entryId === 'string' ? data.entryId : ''
 
     function replyError(message, code) {
+      if (networkBodyWaiters.has(id)) {
+        networkBodyWaiters.delete(id)
+      }
       postToParent('VC_NETWORK_BODY_READ_RESULT', {
         id: id,
         ok: false,
@@ -2362,7 +2376,17 @@
         return
       }
 
+      const timeoutId = setTimeout(function () {
+        if (!networkBodyWaiters.has(id)) {
+          return
+        }
+        networkBodyWaiters.delete(id)
+        replyError('body read timed out', 'NETWORK_BODY_TIMEOUT')
+      }, 30000)
+
       networkBodyWaiters.set(id, function (swPayload) {
+        clearTimeout(timeoutId)
+        networkBodyWaiters.delete(id)
         const swData = swPayload && typeof swPayload === 'object' ? swPayload : {}
         if (!swData.ok) {
           postToParent('VC_NETWORK_BODY_READ_RESULT', {
@@ -2403,12 +2427,110 @@
         })
       })
 
-      ctl.postMessage([MSG_PAGE_NETWORK_BODY_READ, { id: id, entryId: entryId }])
+      ctl.postMessage([
+        MSG_PAGE_NETWORK_BODY_READ,
+        {
+          id: id,
+          entryId: entryId,
+          sessionId: sessionId,
+        },
+      ])
+    })
+  }
+
+  /** @type {Map<string, (payload: unknown) => void>} */
+  const networkHotProbeWaiters = new Map()
+
+  /**
+   * @param {unknown} payload
+   */
+  function handleNetworkHotProbeReply(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    if (!id || !networkHotProbeWaiters.has(id)) {
+      return
+    }
+    const resolve = networkHotProbeWaiters.get(id)
+    networkHotProbeWaiters.delete(id)
+    if (typeof resolve === 'function') {
+      resolve(data)
+    }
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function probeNetworkHot(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    const method = typeof data.method === 'string' ? data.method : 'GET'
+    const url = typeof data.url === 'string' ? data.url : ''
+
+    function replyError(message, code) {
+      if (networkHotProbeWaiters.has(id)) {
+        networkHotProbeWaiters.delete(id)
+      }
+      postToParent('VC_NETWORK_HOT_PROBE_RESULT', {
+        id: id,
+        ok: false,
+        error: { message: message, code: code },
+      })
+    }
+
+    if (!id || !url) {
+      emitError('VC_NETWORK_HOT_PROBE requires id and url', 'HOT_PROBE_BAD_REQUEST')
+      return
+    }
+
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        replyError('service worker not ready', 'NO_SW')
+        return
+      }
+
+      const timeoutId = setTimeout(function () {
+        if (!networkHotProbeWaiters.has(id)) {
+          return
+        }
+        networkHotProbeWaiters.delete(id)
+        replyError('hot probe timed out', 'HOT_PROBE_TIMEOUT')
+      }, 10000)
+
+      networkHotProbeWaiters.set(id, function (swPayload) {
+        clearTimeout(timeoutId)
+        networkHotProbeWaiters.delete(id)
+        const swData = swPayload && typeof swPayload === 'object' ? swPayload : {}
+        if (!swData.ok) {
+          postToParent('VC_NETWORK_HOT_PROBE_RESULT', {
+            id: id,
+            ok: false,
+            error: swData.error || { message: 'probe failed', code: 'HOT_PROBE_FAILED' },
+          })
+          return
+        }
+        const value = swData.value && typeof swData.value === 'object' ? swData.value : {}
+        postToParent('VC_NETWORK_HOT_PROBE_RESULT', {
+          id: id,
+          ok: true,
+          value: { exists: !!value.exists },
+        })
+      })
+
+      ctl.postMessage([
+        MSG_PAGE_NETWORK_HOT_PROBE,
+        {
+          id: id,
+          method: method,
+          url: url,
+          sessionId: sessionId,
+        },
+      ])
     })
   }
 
   /**
-   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string }} raw
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, hotStored?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string }} raw
    */
   function appendNetworkEntry(raw) {
     const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
@@ -2425,6 +2547,7 @@
       bypass: !!raw.bypass,
       pending: !!raw.pending,
       hasBody: !!raw.hasBody,
+      hotStored: !!raw.hotStored,
       fromCache: !!raw.fromCache,
       devtoolsId: typeof raw.devtoolsId === 'string' ? raw.devtoolsId : '',
       requestHeaders:
@@ -2515,6 +2638,9 @@
   }
 
   function onContentError() {
+    if (fatal) {
+      return
+    }
     // 跨域逃跑时部分浏览器会打 error；优先拉回代理，而不是直接报失败
     if (recoverEscapedContent()) {
       return
@@ -2529,8 +2655,32 @@
   /**
    * @returns {boolean}
    */
-  function detectLoadFailure() {
+  function isBlankContentFrame() {
     if (!contentFrame) {
+      return false
+    }
+    try {
+      const win = contentFrame.contentWindow
+      if (!win) {
+        return false
+      }
+      const href = win.location.href
+      return href === 'about:blank' || href.endsWith('/blank')
+    } catch {
+      const src = contentFrame.getAttribute('src') || contentFrame.src || ''
+      return src === 'about:blank'
+    }
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  function detectLoadFailure() {
+    if (fatal || !contentFrame) {
+      return false
+    }
+
+    if (isBlankContentFrame()) {
       return false
     }
 
@@ -2576,6 +2726,11 @@
   }
 
   function onContentLoad() {
+    if (fatal) {
+      emitLoading(false)
+      return
+    }
+
     if (recoverEscapedContent()) {
       return
     }
@@ -2603,6 +2758,7 @@
       postToParent('VC_NAVIGATED', state)
     }
     ensureConsoleHook()
+    postNetworkOptsToSw()
   }
 
   /**

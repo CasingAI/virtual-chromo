@@ -141,9 +141,7 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
         const pageId = genPageId()
         const buf = inject.getHtmlCode(urlObj, pageId)
         size += buf.byteLength
-        if (size <= netCache.MAX_BODY_BYTES) {
-          chunks.push(new Uint8Array(buf))
-        }
+        chunks.push(new Uint8Array(buf))
         controller.enqueue(buf)
 
         const done = await pageWait(pageId)
@@ -163,9 +161,7 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
         controller.close()
       } else {
         size += r.value.byteLength
-        if (size <= netCache.MAX_BODY_BYTES) {
-          chunks.push(r.value)
-        }
+        chunks.push(r.value)
         controller.enqueue(r.value)
       }
     }
@@ -333,9 +329,10 @@ networkLog.setEmitter(function (entry) {
  * @param {number} redirNum
  * @param {string=} sessionId
  * @param {string=} clientId
+ * @param {string=} hotKeyUrl
  * @returns {Promise<Response>}
  */
-async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
+async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, hotKeyUrl) {
   const sid = sessionId || session.getCurrentSessionId()
   const isTurnstile = isPassthroughHost(urlObj.hostname)
   const startMs = Date.now()
@@ -343,6 +340,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
   const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
   const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
   const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
+  const cacheUrl = hotKeyUrl || netCache.normalizeHotUrl(urlObj.href)
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
   const timingMarks = {}
 
@@ -364,8 +362,8 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
       timing: currentTiming(),
     })
 
-    if (!disableCache && devtoolsId && req.method === 'GET') {
-      const hot = await netCache.getHot(sid, devtoolsId, req.method, urlObj.href)
+    if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
+      const hot = await netCache.getHot(sid, req.method, cacheUrl, devtoolsId)
       if (hot) {
         const now = Date.now()
         timingMarks.startedAt = now
@@ -379,6 +377,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
         await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
           fromCache: true,
           source: 'cache',
+          hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
         })
         return netCache.responseFromChunks(resOpt, chunks)
@@ -471,6 +470,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
           ...(extra || {}),
           source: launchSource,
           sourceHost: launchSourceHost,
+          hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
         },
       )
@@ -528,7 +528,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
           if (++redirNum === MAX_REDIR) {
             return makeHtmlRes('重定向过多', 500)
           }
-          return forward(req, locObj, cliUrlObj, redirNum, sid, clientId)
+          return forward(req, locObj, cliUrlObj, redirNum, sid, clientId, cacheUrl)
         }
         setHeader('location', urlx.encUrlObj(locObj))
       }
@@ -597,16 +597,27 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
  * @param {boolean} disableCache
  * @param {ResponseInit} resOpt
  * @param {Uint8Array[]} chunks
- * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string }} [extra]
+ * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string, hotKeyUrl?: string }} [extra]
  */
 async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, extra) {
   const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
   let hasBody = false
+  let hotStored = false
+  const cacheUrl =
+    extra && typeof extra.hotKeyUrl === 'string' && extra.hotKeyUrl
+      ? extra.hotKeyUrl
+      : netCache.normalizeHotUrl(urlObj.href)
   if (netCache.shouldStoreBody(size) && chunks.length) {
     const snapshot = netCache.responseFromChunks(resOpt, chunks)
     hasBody = await netCache.putArchive(sid, entryId, snapshot)
-    if (!disableCache && devtoolsId && req.method === 'GET' && !(extra && extra.fromCache)) {
-      await netCache.putHot(sid, devtoolsId, req.method, urlObj.href, snapshot)
+    if (
+      !disableCache &&
+      sid &&
+      sid !== 'default' &&
+      req.method === 'GET' &&
+      !(extra && extra.fromCache)
+    ) {
+      hotStored = await netCache.putHot(sid, req.method, cacheUrl, snapshot)
     }
   }
   let source = extra && typeof extra.source === 'string' ? extra.source : ''
@@ -628,6 +639,7 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
     devtoolsId,
     size,
     hasBody,
+    hotStored: !!(extra && extra.fromCache) || hotStored,
     bypass: !!(extra && extra.bypass),
     fromCache: !!(extra && extra.fromCache),
     failed: !!(extra && extra.failed),
@@ -833,6 +845,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
   const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
   const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
   const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
+  const cacheUrl = netCache.normalizeHotUrl(urlObj.href)
   const startMs = Date.now()
   const entryId = networkLog.makeId()
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
@@ -857,8 +870,8 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       timing: currentTiming(),
     })
 
-    if (!disableCache && devtoolsId && req.method === 'GET') {
-      const hot = await netCache.getHot(sid, devtoolsId, req.method, urlObj.href)
+    if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
+      const hot = await netCache.getHot(sid, req.method, cacheUrl, devtoolsId)
       if (hot) {
         const now = Date.now()
         timingMarks.startedAt = now
@@ -873,6 +886,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
           fromCache: true,
           bypass: true,
           source: 'cache',
+          hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
         })
         return netCache.responseFromChunks(resOpt, chunks)
@@ -929,6 +943,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, [], {
         bypass: true,
         source: 'bypass',
+        hotKeyUrl: cacheUrl,
         timing: currentTiming({ finishedAt: Date.now() }),
       })
       return res
@@ -939,6 +954,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       void storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
         bypass: true,
         source: 'bypass',
+        hotKeyUrl: cacheUrl,
         timing: currentTiming({ finishedAt: Date.now() }),
       })
     })
@@ -1319,6 +1335,10 @@ global.addEventListener('message', e => {
   const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
   const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
   const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  const sid =
+    val && typeof val.sessionId === 'string' && val.sessionId
+      ? val.sessionId
+      : srcSession
   if (!entryId || !rpcId) {
     sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
       id: rpcId,
@@ -1327,7 +1347,7 @@ global.addEventListener('message', e => {
     })
     break
   }
-  netCache.getArchive(srcSession, entryId).then(async (res) => {
+  netCache.getArchive(sid, entryId).then(async (res) => {
     if (!res) {
       sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
         id: rpcId,
@@ -1336,16 +1356,17 @@ global.addEventListener('message', e => {
       })
       return
     }
-    const buf = await res.arrayBuffer()
-    const truncated = buf.byteLength > netCache.MAX_BODY_BYTES
+    const prefix = await netCache.readBodyDisplayPrefix(res)
     sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
       id: rpcId,
       ok: true,
       value: {
-        headers: netCache.headersToObject(res.headers),
-        body: buf,
-        truncated,
-        status: res.status,
+        headers: prefix.headers,
+        body: prefix.text,
+        encoding: 'text',
+        truncated: prefix.truncated,
+        status: prefix.status,
+        bytesRead: prefix.bytesRead,
       },
     })
   }).catch((err) => {
@@ -1364,6 +1385,40 @@ global.addEventListener('message', e => {
   if (entryId) {
     netCache.dropArchive(dropSession, entryId)
   }
+  break
+  }
+
+  case MSG.PAGE_NETWORK_HOT_PROBE: {
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  const sid =
+    val && typeof val.sessionId === 'string' && val.sessionId
+      ? val.sessionId
+      : srcSession
+  const method = val && typeof val.method === 'string' ? val.method : 'GET'
+  const url = val && typeof val.url === 'string' ? val.url : ''
+  if (!rpcId || !url) {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'id and url required', code: 'HOT_PROBE_BAD_REQUEST' },
+    })
+    break
+  }
+  netCache.hasHot(sid, method, url).then((exists) => {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: { exists: !!exists },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'HOT_PROBE_FAILED' },
+    })
+  })
   break
   }
   }

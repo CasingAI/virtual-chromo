@@ -226,7 +226,7 @@ await vcRpc('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', {
 
 ### `VC_NETWORK_OPTIONS`
 
-配置 Network 缓存行为（按**父页面 tab** 隔离）。每个嵌入实例应生成唯一 `devtoolsId`（UUID），与 `disableCache` 一并下发。
+配置 Network 缓存行为。`devtoolsId` 仅用于将 **Disable cache** 开关绑定到父页面 tab；热缓存本身按 **session** 持久共享。
 
 ```javascript
 iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
@@ -236,8 +236,10 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 ```
 
 - `disableCache: true`：跳过热缓存，且 SW 出站 `fetch` 使用 `cache: 'no-store'`
-- `disableCache: false`：允许热缓存复用（按 `sessionId + devtoolsId + method + url`）
-- 未传 `devtoolsId` 时 bridge 会自动生成并在 `VC_READY` 后注册到 SW
+- `disableCache: false`：允许热缓存复用（按 `sessionId + method + url`，session 级持久，跨 reload）
+- 未传 `devtoolsId` 时 bridge 默认用 `sessionId`（`default` session 才 fallback 随机 id）并在 `VC_READY` 后注册到 SW
+
+> **后续 TODO**（存储管理 API，对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS` / `VC_NETWORK_CACHE_CLEAR` / `VC_NETWORK_CACHE_LIST` — 查询 hot/archive 占用、按层清空、调试列出 hot key。当前清除仍走 `VC_SESSION_DESTROY` → `destroySessionCaches`。
 
 ### `VC_NETWORK_BODY_READ`
 
@@ -250,7 +252,7 @@ await vcRpc('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
 })
 ```
 
-成功时 `value` 含 `headers`、`body`（base64）、`encoding: 'base64'`、`status`、`truncated?`。单条 body 上限 1MB；超出则不存储（`hasBody: false`）。
+成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有 session 总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。
 
 ## iframe → 父（事件）
 
@@ -520,7 +522,7 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // }]
 ```
 
-entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab 隔离键）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因）。
+entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab Disable-cache 绑定键，不参与 hot key）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因）。
 
 viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_build, vc_version }` 交换 build；不一致时 bridge 进入 Fatal 状态并上报 `VC_ERROR { code: 'VERSION_MISMATCH' }`。
 
@@ -555,8 +557,23 @@ viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_bu
 
 | 层 | Key | 用途 |
 |----|-----|------|
-| archive | `entryId` | DevTools 回看，不可变 |
-| hot | `sessionId + devtoolsId + method + url` | 可复用热缓存，Disable Cache 时跳过 |
+| archive | `sessionId + entryId` | DevTools 回看，不可变 |
+| hot | `sessionId + method + url`（URL 经 `normalizeHotUrl`） | session 级可复用热缓存；`devtoolsId` 仅控制 Disable Cache 是否跳过 get/put |
+
+首次满足写入条件的 GET 会 **putHot 但不命中**；同 session 内再次请求同 URL 才 `fromCache` / `source: cache`。Redirect 链用**原始请求 URL** 作为 hot key，不随 301/302 landing URL 分裂。`hotStored` 字段表示本次是否成功写入热缓存。`VC_SESSION_DESTROY` 清空该 session 的 archive + hot。
+
+### `VC_NETWORK_HOT_PROBE` / `VC_NETWORK_HOT_PROBE_RESULT`
+
+探测 SW 热缓存中是否已有某 URL 条目（诊断用）：
+
+```javascript
+await vcRpc('VC_NETWORK_HOT_PROBE_RESULT', 'VC_NETWORK_HOT_PROBE', {
+  id: 'rpc-1',
+  method: 'GET',
+  url: 'https://example.com/a.js',
+})
+// value: { exists: true|false }
+```
 
 **DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。
 

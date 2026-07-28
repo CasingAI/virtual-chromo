@@ -4,8 +4,15 @@ const ARCHIVE_CACHE = 'vc-net-archive'
 const HOT_CACHE = 'vc-net-hot'
 const VC_ORIGIN = 'https://__vc__'
 
-/** @type {number} */
-export const MAX_BODY_BYTES = 1024 * 1024
+/**
+ * Max bytes streamed from archive for DevTools Response/Preview.
+ * Storage itself has no per-entry size cap; hot cache uses HOT_QUOTA_BYTES LRU.
+ * @type {number}
+ */
+export const BODY_DISPLAY_MAX_BYTES = 64 * 1024
+
+/** @deprecated Use BODY_DISPLAY_MAX_BYTES. Kept as alias for older call sites during transition. */
+export const MAX_BODY_BYTES = BODY_DISPLAY_MAX_BYTES
 
 /** Hot cache soft quota (bytes). */
 const HOT_QUOTA_BYTES = 50 * 1024 * 1024
@@ -32,13 +39,42 @@ export function archiveRequestUrl(sessionId, entryId) {
 }
 
 /**
+ * @param {string} url
+ */
+export function normalizeHotUrl(url) {
+  try {
+    return new URL(url).href
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Session-scoped hot cache key (devtoolsId is NOT part of the key;
+ * it only controls Disable cache via resolveContext).
+ *
+ * @param {string} sessionId
+ * @param {string} method
+ * @param {string} url
+ */
+export function hotRequestUrl(sessionId, method, url) {
+  const normalized = normalizeHotUrl(url)
+  const hash = util.strHash(`${method}\0${normalized}`)
+  const hashHex = util.numToHex(hash, 8)
+  return `${VC_ORIGIN}/hot/${encodeURIComponent(sessionId)}/${hashHex}`
+}
+
+/**
+ * Legacy hot key that included devtoolsId (pre v5/v6). Used for migration reads only.
+ *
  * @param {string} sessionId
  * @param {string} devtoolsId
  * @param {string} method
  * @param {string} url
  */
-export function hotRequestUrl(sessionId, devtoolsId, method, url) {
-  const hash = util.strHash(`${method}\0${url}`)
+export function hotRequestUrlLegacy(sessionId, devtoolsId, method, url) {
+  const normalized = normalizeHotUrl(url)
+  const hash = util.strHash(`${method}\0${normalized}`)
   const hashHex = util.numToHex(hash, 8)
   return `${VC_ORIGIN}/hot/${encodeURIComponent(sessionId)}/${encodeURIComponent(devtoolsId)}/${hashHex}`
 }
@@ -103,8 +139,8 @@ export function resolveContext(clientId, sessionId) {
     }
     return fallback
   }
-  // Before PAGE_NETWORK_OPTS arrives, use sessionId as hot-cache key so
-  // first-paint GETs still share the same namespace as parent-tab opts.
+  // Before PAGE_NETWORK_OPTS arrives, provisional opts so first-paint GETs
+  // still resolve disableCache=false under the same session namespace.
   if (sessionId && sessionId !== 'default') {
     const provisional = {
       devtoolsId: sessionId,
@@ -122,22 +158,90 @@ export function resolveContext(clientId, sessionId) {
 }
 
 /**
+ * Whether a captured body size is eligible for archive/hot storage.
+ * No per-entry byte cap — larger responses should still be cached.
  * @param {number} size
  */
 export function shouldStoreBody(size) {
-  return size >= 0 && size <= MAX_BODY_BYTES
+  return typeof size === 'number' && size >= 0 && Number.isFinite(size)
 }
 
 /**
  * @param {Response} res
+ * @returns {Promise<number>} byte length, or -1 if unreadable
  */
 async function responseByteLength(res) {
   try {
     const buf = await res.clone().arrayBuffer()
     return buf.byteLength
   } catch {
-    return MAX_BODY_BYTES + 1
+    return -1
   }
+}
+
+/**
+ * Stream-read a cached Response body up to BODY_DISPLAY_MAX_BYTES for DevTools UI.
+ * @param {Response} res
+ * @returns {Promise<{ text: string, truncated: boolean, bytesRead: number, headers: Record<string, string>, status: number }>}
+ */
+export async function readBodyDisplayPrefix(res) {
+  const headers = headersToObject(res.headers)
+  const status = res.status
+  if (!res.body) {
+    return { text: '', truncated: false, bytesRead: 0, headers, status }
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder('utf-8', { fatal: false })
+  /** @type {Uint8Array[]} */
+  const chunks = []
+  let bytesRead = 0
+  let truncated = false
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+      if (!value || !value.byteLength) {
+        continue
+      }
+      if (bytesRead >= BODY_DISPLAY_MAX_BYTES) {
+        truncated = true
+        break
+      }
+      const remaining = BODY_DISPLAY_MAX_BYTES - bytesRead
+      if (value.byteLength <= remaining) {
+        chunks.push(value)
+        bytesRead += value.byteLength
+      } else {
+        chunks.push(value.subarray(0, remaining))
+        bytesRead += remaining
+        truncated = true
+        break
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel()
+    } catch {
+      // ignore
+    }
+  }
+
+  let total = 0
+  for (const chunk of chunks) {
+    total += chunk.byteLength
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  const text = decoder.decode(merged)
+  return { text, truncated, bytesRead, headers, status }
 }
 
 /**
@@ -147,10 +251,6 @@ async function responseByteLength(res) {
  * @returns {Promise<boolean>}
  */
 export async function putArchive(sessionId, entryId, res) {
-  const size = await responseByteLength(res)
-  if (!shouldStoreBody(size)) {
-    return false
-  }
   try {
     const cache = await caches.open(ARCHIVE_CACHE)
     const req = new Request(archiveRequestUrl(sessionId, entryId))
@@ -229,18 +329,17 @@ async function ensureHotQuota(nextSize) {
 
 /**
  * @param {string} sessionId
- * @param {string} devtoolsId
  * @param {string} method
  * @param {string} url
  * @param {Response} res
  * @returns {Promise<boolean>}
  */
-export async function putHot(sessionId, devtoolsId, method, url, res) {
+export async function putHot(sessionId, method, url, res) {
   const size = await responseByteLength(res)
   if (!shouldStoreBody(size)) {
     return false
   }
-  const hotUrl = hotRequestUrl(sessionId, devtoolsId, method, url)
+  const hotUrl = hotRequestUrl(sessionId, method, url)
   try {
     await ensureHotQuota(size)
     const cache = await caches.open(HOT_CACHE)
@@ -255,16 +354,35 @@ export async function putHot(sessionId, devtoolsId, method, url, res) {
 
 /**
  * @param {string} sessionId
- * @param {string} devtoolsId
  * @param {string} method
  * @param {string} url
+ * @param {string=} legacyDevtoolsId
  * @returns {Promise<Response|null>}
  */
-export async function getHot(sessionId, devtoolsId, method, url) {
+export async function getHot(sessionId, method, url, legacyDevtoolsId) {
   try {
-    const hotUrl = hotRequestUrl(sessionId, devtoolsId, method, url)
+    const hotUrl = hotRequestUrl(sessionId, method, url)
     const cache = await caches.open(HOT_CACHE)
-    const res = await cache.match(new Request(hotUrl))
+    let res = await cache.match(new Request(hotUrl))
+    if (!res && legacyDevtoolsId) {
+      const legacyUrl = hotRequestUrlLegacy(sessionId, legacyDevtoolsId, method, url)
+      res = await cache.match(new Request(legacyUrl))
+      if (res) {
+        // Migrate to session-scoped key for subsequent hits.
+        try {
+          const size = await responseByteLength(res)
+          if (shouldStoreBody(size)) {
+            await ensureHotQuota(size)
+            await cache.put(new Request(hotUrl), res.clone())
+            mHotIndex.set(hotUrl, { size, at: Date.now() })
+            await cache.delete(new Request(legacyUrl))
+            mHotIndex.delete(legacyUrl)
+          }
+        } catch {
+          // ignore migrate failures; still return legacy hit
+        }
+      }
+    }
     if (res) {
       const meta = mHotIndex.get(hotUrl)
       if (meta) {
@@ -275,6 +393,23 @@ export async function getHot(sessionId, devtoolsId, method, url) {
   } catch (err) {
     console.warn('[vc] hot get fail:', err)
     return null
+  }
+}
+
+/**
+ * @param {string} sessionId
+ * @param {string} method
+ * @param {string} url
+ * @returns {Promise<boolean>}
+ */
+export async function hasHot(sessionId, method, url) {
+  try {
+    const hotUrl = hotRequestUrl(sessionId, method, url)
+    const cache = await caches.open(HOT_CACHE)
+    const res = await cache.match(new Request(hotUrl))
+    return !!res
+  } catch {
+    return false
   }
 }
 
@@ -369,9 +504,7 @@ export function tapBodyCapture(body, onComplete) {
         }
         if (value) {
           size += value.byteLength
-          if (size <= MAX_BODY_BYTES) {
-            chunks.push(value)
-          }
+          chunks.push(value)
         }
         controller.enqueue(value)
       } catch (err) {

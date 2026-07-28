@@ -257,21 +257,26 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 - 请求列表：method、URL、status、type、size、duration、pending、fromCache、bypass
 - **Request Headers**（随 entry 上报；序列化软上限约 32KB）
-- **Response Headers + Body**（`VC_NETWORK_BODY_READ`，archive 按 entryId，body ≤ 1MB）
+- **Response Headers + Body**（`VC_NETWORK_BODY_READ`，archive 按 entryId；存储无单条上限；读出为流式前缀约 64KB）
 - **Referrer / Referrer Policy**
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
-- Preview：JSON 格式化、文本、图片 data URL；HTML 仅源码文本（防 XSS）
+- Preview：JSON 格式化、文本；图片/音视频等二进制占位不渲染
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
-### DevTools 热缓存（build `20260728-v3`+）
+### DevTools 热缓存（build `20260728-v7`+）
 
-- 热缓存 key：`sessionId + devtoolsId + method + url`
-- **devtoolsId 默认等于 sessionId**（与 instant-app 一致），避免 bridge 随机 UUID 与 parent 下发不一致导致永不命中
-- SW 在 `PAGE_NETWORK_OPTS` 到达前，也可用 sessionId 作为临时 fallback
-- 仅 **GET、body ≤ 1MB、Disable cache 关闭** 时写入；**同 URL 第二次**请求才显示 `DevTools memory cache`
+- 热缓存 key：`sessionId + method + url`（**session 级持久**，跨页面 reload；URL 经 normalize；存于 Cache Storage `vc-net-hot`）
+- Redirect 不分裂 key：put/get 使用用户**原始请求 URL**
+- `devtoolsId` **仅**绑定 Disable cache 开关（跳过 get/put），**不参与** hot key；get/put 门闩改为 `sid && !disableCache`
+- 仅 **GET、Disable cache 关闭、经 proxy 通路** 时写入（**无单条 body 体积上限**）；**首次 GET 只写入不命中**，同 session 再次请求同 URL 才显示 `DevTools memory cache`
+- 热缓存 session 总配额约 50MB，LRU 淘汰旧条目
+- entry 字段 `hotStored`：本次是否成功写入热缓存
+- `VC_NETWORK_HOT_PROBE`：诊断表可探测「SW 中是否已有该 URL」
+- Served from「?」诊断：区分「满足写入条件」与「本次命中」；Network 列表内重复 URL 仅供参考；首次写入 miss 为灰色说明
 - 响应头 **Cache-Control** 管浏览器 HTTP 缓存；**Served from 不反映** disk/memory cache
+- 清除：`VC_SESSION_DESTROY` → `destroySessionCaches`；显式管理 API（`VC_NETWORK_CACHE_STATS` / `CLEAR` / `LIST`）见下方长期 TODO
 
 ### Viewer 版本守护（build `20260728-v4`+）
 
@@ -291,18 +296,18 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 | Connection reuse / priority | 无 API | 不展示 |
 | Cookies 独立面板 | 未解析 Set-Cookie 树 | 可在 Response Headers 看原始头 |
 | WS 帧级详情 | 按 HTTP 记录，无帧协议 | 无 Frames Tab |
-| 超大 body | archive 上限 1MB | truncated 提示 |
+| 超大文本整页展示 | 避免整包过桥 | Response 流式读 Cache 前缀（约 64KB）+ truncated 提示 |
 | 浏览器 HTTP disk/memory cache 状态 | 未接 Resource Timing | Served from「?」中说明 |
 
 ### 自检
 
-1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v4`+）
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v7`+）
 2. Network 点选请求：Headers 三区（General / Response / Request）可见
-3. 同 tab 刷新后同 URL 图片：第二次应出现 `cache` badge / `DevTools memory cache`
-4. 未命中时点 Served from 旁 **?**：条件诊断表（pass/fail），非长文说明
-5. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
-6. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
-7. 旧 bridge（无新字段）：抽屉不崩溃，Timing/Request Headers 显示空态
+3. 选中 hasBody 请求：Response/Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
+4. 同 session 刷新后同 URL：第二次应出现 `cache` badge / `DevTools memory cache`
+5. 首次 GET 未命中时点 Served from 旁 **?**：写入条件绿、`热缓存命中` 为灰色「本次写入」；可看到「SW 中已有该 URL 条目」
+6. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
+7. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
 8. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
 9. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复
 
@@ -313,5 +318,6 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - [x] 用 `jsproxy-src` + `bundle.built.js` 替换黑盒 `bundle.js`（进行中）
 - [x] 修复 `HTMLElement.prototype.click` connected 分支（v14+）
 - [ ] Debug Panel 可选接入 `consoleBuffer` 显示子页日志
+- [ ] **Network 缓存存储管理 API**（对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS`（hot/archive 条目数与字节）、`VC_NETWORK_CACHE_CLEAR`（`layer: hot|archive|all`）、`VC_NETWORK_CACHE_LIST`（调试列出 hot key）；bridge 转发；instant-app 设置/存储页挂入口
 
 上游遗留耦合（jsDelivr 预缓存、多节点路由、Google 默认搜索等）的完整清单与处置优先级见 **[jsproxy-legacy-decoupling.md](jsproxy-legacy-decoupling.md)**。

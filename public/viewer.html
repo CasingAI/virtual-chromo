@@ -140,7 +140,27 @@
 
       window.__vcShowFatal = showFatal
       fatalReload.addEventListener('click', function () {
-        location.reload()
+        navigator.serviceWorker
+          .getRegistration()
+          .then(function (reg) {
+            if (!reg) {
+              return
+            }
+            if (reg.waiting) {
+              reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+            }
+            return reg.update().then(function () {
+              if (reg.waiting) {
+                reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+              }
+            })
+          })
+          .catch(function () {
+            // ignore — still reload below
+          })
+          .then(function () {
+            location.reload()
+          })
       })
 
       function reloadAfterSwInstall() {
@@ -225,7 +245,7 @@
           return
         }
 
-        sw.register('/sw.js?b=20260728-v4')
+        sw.register('/sw.js?b=20260728-v7')
           .then(function (reg) {
             watchForUpdates(reg)
             return onSwReady()
