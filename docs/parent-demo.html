@@ -195,6 +195,9 @@
     <button id="btnAlert" type="button" title="在子页面 alert（应被 noop）">Alert</button>
     <button id="btnScreenshot" type="button" title="VC_SCREENSHOT">截图</button>
     <button id="btnClearState" type="button" title="VC_CLEAR_STATE">清状态</button>
+    <label style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:12px;color:#cbd5e1;white-space:nowrap" title="VC_DEBUG_OPTIONS navProbe：抑制 VC_CLICK/LOCATION/HISTORY，改发 VC_DEBUG_NAV">
+      <input id="chkNavProbe" type="checkbox" /> 导航探针
+    </label>
   </div>
   <div id="status">等待 virtual-chromo 就绪…</div>
   <div id="main">
@@ -249,8 +252,10 @@
       const screenshotPreview = document.getElementById('screenshotPreview')
       const screenshotMeta = document.getElementById('screenshotMeta')
       const btnClearState = document.getElementById('btnClearState')
+      const chkNavProbe = document.getElementById('chkNavProbe')
 
       let ready = false
+      let navProbe = false
       let currentUrl = ''
       let lastConsoleId = ''
       let lastNetworkId = ''
@@ -494,6 +499,10 @@
         switch (cmd) {
           case 'VC_READY':
             ready = true
+            if (chkNavProbe && chkNavProbe.checked) {
+              navProbe = true
+              post('VC_DEBUG_OPTIONS', { navProbe: true })
+            }
             setStatus(
               '已就绪 v' +
                 (payload && payload.version || '?') +
@@ -571,7 +580,26 @@
               post('VC_RELOAD')
             }
             break
+          case 'VC_DEBUG_NAV':
+            setStatus(
+              '探针 ' +
+                (payload && payload.kind || '?') +
+                (payload && payload.method ? ' · ' + payload.method : '') +
+                ': ' +
+                (payload && (payload.url || payload.href) || '') +
+                (payload && payload.stack && payload.stack.length
+                  ? ' [' + payload.stack.length + ' frames]'
+                  : ''),
+            )
+            console.info('[virtual-chromo navProbe]', payload)
+            break
         }
+      })
+
+      chkNavProbe.addEventListener('change', function () {
+        navProbe = !!chkNavProbe.checked
+        post('VC_DEBUG_OPTIONS', { navProbe: navProbe })
+        setStatus('导航探针: ' + (navProbe ? 'on' : 'off'))
       })
 
       btnBack.addEventListener('click', function () { post('VC_BACK') })

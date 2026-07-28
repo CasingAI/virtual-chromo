@@ -19,7 +19,7 @@
 // path.js  (webpack module 5)
 // ========================================================================
 
-export const ROOT = getRootPath() 
+export const ROOT = getRootPath()
 export const HOME = ROOT + 'index.html'
 export const CONF = ROOT + 'conf.js'
 export const ICON = ROOT + 'favicon.ico'
@@ -45,12 +45,16 @@ function getRootPath() {
     return envPath
   }
   let url = location.href
+
+  const proxyPos = url.indexOf('/-----http')
+  if (proxyPos !== -1) {
+    return url.substr(0, proxyPos).replace(/\/*$/, '/')
+  }
+
   const pos = url.indexOf('/-----http')
   if (pos === -1) {
-    // sw
     url = url.replace(/[^/]+$/, '')
   } else {
-    // page
     url = url.substr(0, pos)
   }
   return url.replace(/\/*$/, '/')
@@ -211,6 +215,13 @@ export const SW_COOKIE_PUSH = 4
 export const PAGE_INIT_BEG = 5
 export const PAGE_INIT_END = 6
 
+export const PAGE_STORAGE_GET = 7
+export const PAGE_STORAGE_SET = 8
+export const PAGE_STORAGE_REMOVE = 9
+export const PAGE_STORAGE_CLEAR = 10
+export const SW_STORAGE_PUSH = 11
+export const SW_STORAGE_REPLY = 12
+
 export const PAGE_CONF_SET = 110
 export const PAGE_CONF_GET = 111
 export const PAGE_RELOAD_CONF = 112
@@ -220,6 +231,39 @@ export const SW_CONF_CHANGE = 113
 
 export const PAGE_READY_CHECK = 200
 export const SW_READY = 201
+
+export const SW_NETWORK_PUSH = 305
+export const PAGE_NETWORK_OPTS = 306
+export const PAGE_NETWORK_BODY_READ = 307
+export const SW_NETWORK_BODY_REPLY = 308
+export const PAGE_NETWORK_ARCHIVE_DROP = 309
+export const PAGE_BUILD_GET = 310
+export const SW_BUILD_REPLY = 311
+export const PAGE_NETWORK_HOT_PROBE = 312
+export const SW_NETWORK_HOT_PROBE_REPLY = 313
+export const PAGE_NETWORK_INITIATOR_TIP = 314
+export const PAGE_NETWORK_BODY_READ_LINES = 315
+export const SW_NETWORK_BODY_LINES_REPLY = 316
+export const PAGE_CLEAR_STATE = 320
+export const SW_CLEAR_STATE = 321
+
+export const PAGE_COOKIE_LIST = 322
+export const SW_COOKIE_LIST_REPLY = 323
+export const PAGE_COOKIE_DELETE = 324
+export const SW_COOKIE_DELETE_REPLY = 325
+export const PAGE_COOKIE_CLEAR = 326
+export const SW_COOKIE_CLEAR_REPLY = 327
+
+export const PAGE_NETWORK_CACHE_STATS = 328
+export const SW_NETWORK_CACHE_STATS_REPLY = 329
+export const PAGE_NETWORK_CACHE_LIST = 330
+export const SW_NETWORK_CACHE_LIST_REPLY = 331
+export const PAGE_NETWORK_CACHE_CLEAR = 332
+export const SW_NETWORK_CACHE_CLEAR_REPLY = 333
+export const PAGE_COOKIE_CLEAR_ALL = 334
+export const SW_COOKIE_CLEAR_ALL_REPLY = 335
+export const PAGE_NETWORK_CACHE_CLEAR_ALL = 336
+export const SW_NETWORK_CACHE_CLEAR_ALL_REPLY = 337
 
 // ========================================================================
 // signal.js  (webpack module 8)
@@ -635,7 +679,24 @@ import * as tld from './tld.js'
 
 const PREFIX = path.PREFIX
 const PREFIX_LEN = PREFIX.length
-const ROOT_LEN = path.ROOT.length
+const PROXY_MARKER = '/-----'
+
+/**
+ * Keep target ?/# inside the proxy pathname. Otherwise the browser treats them as
+ * the Worker URL's own search/hash and decUrlObj(pathname) drops them — e.g.
+ * /-----https://duckduckgo.com/?q=x  →  fetches https://duckduckgo.com/
+ * @param {string} url
+ */
+export function encodeProxyTarget(url) {
+  return String(url).replace(/\?/g, '%3F').replace(/#/g, '%23')
+}
+
+/**
+ * @param {string} raw target slice after /-----
+ */
+export function decodeProxyTarget(raw) {
+  return String(raw).replace(/%3F/gi, '?').replace(/%23/gi, '#')
+}
 
 /**
  * @param {string} url 
@@ -645,11 +706,93 @@ export function isHttpProto(url) {
 }
 
 
+/** @param {string} host */
+export function isTurnstileHost(host) {
+  return host === 'challenges.cloudflare.com' ||
+    host.endsWith('.challenges.cloudflare.com')
+}
+
+
+/** @param {string} host */
+export function isRecaptchaHost(host) {
+  return host === 'www.google.com' ||
+    host === 'google.com' ||
+    host === 'www.gstatic.com' ||
+    host === 'gstatic.com' ||
+    host === 'www.recaptcha.net' ||
+    host === 'recaptcha.net'
+}
+
+
+/**
+ * CAPTCHA vendor origins that must keep real MessageEvent.origin / postMessage target.
+ * @param {string} host
+ */
+export function isCaptchaVendorHost(host) {
+  return isTurnstileHost(host) || isRecaptchaHost(host)
+}
+
+
+/**
+ * @param {string} urlStr request or decoded URL
+ */
+export function isTurnstileApiJsUrl(urlStr) {
+  const target = decUrlStrAbs(urlStr)
+  const urlObj = newUrl(target)
+  if (!urlObj || !isTurnstileHost(urlObj.hostname)) {
+    return false
+  }
+  return /\/turnstile\/.*\/api\.js$/i.test(urlObj.pathname)
+}
+
+
+/**
+ * Google reCAPTCHA / enterprise widget & api assets.
+ * @param {string} url
+ * @param {string=} baseUrl
+ */
+export function isRecaptchaUrl(url, baseUrl) {
+  const urlObj = newUrl(url, baseUrl)
+  if (!urlObj || !isRecaptchaHost(urlObj.hostname)) {
+    return false
+  }
+  const host = urlObj.hostname
+  const pathName = urlObj.pathname
+  if (host === 'www.google.com' || host === 'google.com') {
+    return pathName.includes('/recaptcha')
+  }
+  if (host === 'www.gstatic.com' || host === 'gstatic.com') {
+    return pathName.includes('/recaptcha')
+  }
+  return true
+}
+
+
+/**
+ * @param {string} url
+ * @param {string=} baseUrl
+ */
+export function isTurnstileAbsoluteUrl(url, baseUrl) {
+  const urlObj = newUrl(url, baseUrl)
+  return urlObj ? isTurnstileHost(urlObj.hostname) : false
+}
+
+
+/**
+ * iframe/script src that must stay on the real vendor origin (not proxied).
+ * @param {string} url
+ * @param {string=} baseUrl
+ */
+export function isCaptchaPassthroughUrl(url, baseUrl) {
+  return isTurnstileAbsoluteUrl(url, baseUrl) || isRecaptchaUrl(url, baseUrl)
+}
+
+
 /**
  * @param {string} url 
  */
 function isInternalUrl(url) {
-  return !isHttpProto(url) || url.startsWith(PREFIX)
+  return !isHttpProto(url) || url.startsWith(PREFIX) || url.includes(PROXY_MARKER)
 }
 
 
@@ -659,7 +802,6 @@ function isInternalUrl(url) {
  */
 export function newUrl(url, baseUrl) {
   try {
-    // [safari] baseUrl 不能为空
     return baseUrl
       ? new URL(url, baseUrl)
       : new URL(url)
@@ -669,14 +811,47 @@ export function newUrl(url, baseUrl) {
 
 
 /**
- * @param {URL | Location} urlObj 
+ * Always `{origin}/-----` (no /s/<sessionId>/).
+ * @param {string=} origin
+ */
+export function getProxyPrefix(origin) {
+  let proxyOrigin = origin || ''
+  if (!proxyOrigin) {
+    try {
+      if (path.ROOT && /^https?:/i.test(path.ROOT)) {
+        proxyOrigin = new URL(path.ROOT).origin
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!proxyOrigin) {
+    try {
+      proxyOrigin = self.location.origin
+    } catch {
+      proxyOrigin = ''
+    }
+  }
+  return `${proxyOrigin}/-----`
+}
+
+
+/**
+ * @param {URL | Location} urlObj
  */
 export function encUrlObj(urlObj) {
   const fullUrl = urlObj.href
   if (isInternalUrl(fullUrl)) {
     return fullUrl
   }
-  return PREFIX + fullUrl
+  const embedded = encodeProxyTarget(fullUrl)
+
+  // Page context: path.PREFIX already includes /----- from real location.
+  if (!env.isSwEnv() && PREFIX) {
+    return PREFIX + embedded
+  }
+
+  return getProxyPrefix() + embedded
 }
 
 const IS_SW = env.isSwEnv()
@@ -724,10 +899,35 @@ export function encUrlStrAbs(url) {
  */
 export function decUrlObj(urlObj) {
   const fullUrl = urlObj.href
-  if (!fullUrl.startsWith(PREFIX)) {
-    return fullUrl
+  let target = ''
+  if (fullUrl.startsWith(PREFIX)) {
+    target = fullUrl.substr(PREFIX_LEN)
+  } else {
+    const idx = fullUrl.indexOf(PROXY_MARKER)
+    if (idx === -1) {
+      // Legacy /s/<id>/----- embeds: still decode for old bookmarks
+      const legacy = fullUrl.match(/\/s\/[^/]+(\/-----.+)$/)
+      if (legacy) {
+        const rest = legacy[1]
+        const mIdx = rest.indexOf(PROXY_MARKER)
+        target = rest.substr(mIdx + PROXY_MARKER.length)
+      } else {
+        return fullUrl
+      }
+    } else {
+      target = fullUrl.substr(idx + PROXY_MARKER.length)
+    }
   }
-  return fullUrl.substr(PREFIX_LEN)
+
+  target = decodeProxyTarget(target)
+
+  if (urlObj.search && target.indexOf('?') === -1) {
+    target += urlObj.search
+  }
+  if (urlObj.hash && target.indexOf('#') === -1) {
+    target += urlObj.hash
+  }
+  return target
 }
 
 
@@ -796,32 +996,6 @@ export function replaceHttpRefresh(val, relObj) {
 
 /**
  * URL 导航调整
- * 
- * 标准
- *  https://example.com/-----https://www.google.com/
- * 
- * 无路径
- *  https://example.com/-----https://www.google.com
- * 
- * 无协议
- *  https://example.com/-----www.google.com
- * 
- * 任意数量的分隔符
- *  https://example.com/---https://www.google.com
- *  https://example.com/---------https://www.google.com
- *  https://example.com/https://www.google.com
- * 
- * 重复
- *  https://example.com/-----https://example.com/-----https://www.google.com
- * 
- * 别名
- *  https://example.com/google
- * 
- * 
- * 搜索
- *  https://example.com/-----xxx
- *  ->
- *  https://www.google.com/search?q=xxx
  */
 const DEFAULT_ALIAS = {
   'www.google.com': ['google', 'gg', 'g'],
@@ -860,7 +1034,6 @@ function getAliasUrl(alias) {
  * @param {string} part 
  */
 function padUrl(part) {
-  // TODO: HSTS
   const urlStr = isHttpProto(part) ? part : `http://${part}`
   const urlObj = newUrl(urlStr)
   if (!urlObj) {
@@ -868,20 +1041,14 @@ function padUrl(part) {
   }
   const {hostname} = urlObj
 
-  // http://localhost
   if (!hostname.includes('.')) {
     return
   }
 
-  // http://a.b
   if (!tld.getTld(hostname)) {
     return
   }
 
-  // 数字会被当做 IP 地址:
-  // new URL('http://1024').href == 'http://0.0.4.0'
-  // 这种情况应该搜索，而不是访问
-  // 只有出现完整的 IP 才访问
   if (util.isIPv4(hostname) && !urlStr.includes(hostname)) {
     return
   }
@@ -894,34 +1061,84 @@ function padUrl(part) {
  * @param {string} urlStr
  */
 export function adjustNav(urlStr) {
-  // 分隔符 `-----` 之后的部分
-  const rawUrlStr = urlStr.substr(PREFIX_LEN)
+  let origin = ''
+  try {
+    origin = new URL(urlStr).origin
+  } catch {
+    try {
+      origin = self.location.origin
+    } catch {
+      origin = ''
+    }
+  }
+  const prefix = getProxyPrefix(origin)
+
+  let pathname = '/'
+  try {
+    pathname = new URL(urlStr).pathname
+  } catch {
+    // ignore
+  }
+
+  // Viewer home paths
+  if (
+    pathname === '/' ||
+    pathname === '' ||
+    pathname === '/index.html' ||
+    pathname === '/viewer' ||
+    pathname === '/viewer.html'
+  ) {
+    return
+  }
+
+  // Strip legacy /s/<id>/ if present
+  const legacyShell = pathname.match(/^\/s\/[^/]+(\/.*)?$/)
+  const restPath = legacyShell ? (legacyShell[1] || '/') : pathname
+
+  if (
+    restPath === '/' ||
+    restPath === '' ||
+    restPath === '/index.html' ||
+    restPath === '/viewer' ||
+    restPath === '/viewer.html'
+  ) {
+    return
+  }
+
+  const rawUrlStr = restPath.startsWith(PROXY_MARKER)
+    ? restPath.substr(PROXY_MARKER.length)
+    : restPath.replace(/^\/-+/, '')
   const rawUrlObj = newUrl(rawUrlStr)
 
   if (rawUrlObj) {
-    // 循环引用
     const m = rawUrlStr.match(/\/-----(https?:\/\/.+)$/)
     if (m) {
-      return PREFIX + m[1]
+      return prefix + m[1]
     }
-    // 标准格式（大概率）
     if (isHttpProto(rawUrlObj.protocol) &&
-        PREFIX + rawUrlObj.href === urlStr
+        prefix + encodeProxyTarget(rawUrlObj.href) === urlStr
     ) {
       return
     }
   }
 
-  // 任意数量 `-` 之后的部分
-  const part = urlStr.substr(ROOT_LEN).replace(/^-*/, '')
+  const part = restPath.replace(/^\/+/, '').replace(/^-+/, '')
+
+  if (/^s\/[^/]+\/?$/.test(part)) {
+    return
+  }
 
   const ret = getAliasUrl(part) || padUrl(part)
   if (ret) {
-    return PREFIX + ret
+    return prefix + encodeProxyTarget(ret)
+  }
+
+  if (!part) {
+    return
   }
 
   const keyword = part.replace(/&/g, '%26')
-  return PREFIX + DEFAULT_SEARCH.replace('%s', keyword)
+  return prefix + encodeProxyTarget(DEFAULT_SEARCH.replace('%s', keyword))
 }
 
 // ========================================================================
@@ -929,12 +1146,10 @@ export function adjustNav(urlStr) {
 // ========================================================================
 import {Database} from './database.js'
 
-/** @type {Set<Cookie>} */
-let mDirtySet = new Set()
-
 
 function Cookie() {
   this.id = ''
+  this.sessionId = ''
   this.name = ''
   this.value = ''
   this.domain = ''
@@ -953,6 +1168,7 @@ function Cookie() {
  */
 function copy(dst, src) {
   dst.id = src.id
+  dst.sessionId = src.sessionId
   dst.name = src.name
   dst.value = src.value
   dst.domain = src.domain
@@ -1010,25 +1226,16 @@ class CookieDomainNode {
     this.children = {}
   }
 
-  /**
-   * @param {string} name 
-   */
   nextChild(name) {
     return this.children[name] || (
       this.children[name] = new CookieDomainNode
     )
   }
 
-  /**
-   * @param {string} name 
-   */
   getChild(name) {
     return this.children[name]
   }
 
-  /**
-   * @param {Cookie} cookie 
-   */
   addCookie(cookie) {
     if (this.items) {
       this.items.push(cookie)
@@ -1038,21 +1245,244 @@ class CookieDomainNode {
   }
 }
 
-/** @type {Map<string, Cookie>} */
-const mIdCookieMap = new Map()
 
-const mCookieNodeRoot = new CookieDomainNode()
+class CookieJar {
+  constructor() {
+    /** @type {Map<string, Cookie>} */
+    this.mIdCookieMap = new Map()
+    this.mCookieNodeRoot = new CookieDomainNode()
+    /** @type {Set<Cookie>} */
+    this.mDirtySet = new Set()
+  }
 
+  /**
+   * @param {Cookie} item
+   */
+  set(item) {
+    item.sessionId = ''
+    item.id = (item.secure ? ';' : '') +
+      item.name + ';' +
+      item.domain +
+      item.path
+
+    const matched = this.mIdCookieMap.get(item.id)
+
+    if (matched) {
+      if (item.isExpired) {
+        this.mIdCookieMap.delete(item.id)
+        matched.isExpired = true
+      } else {
+        copy(matched, item)
+      }
+      this.mDirtySet.add(matched)
+    } else if (!item.isExpired) {
+      const labels = item.domain.split('.')
+      let labelPos = labels.length
+      let node = this.mCookieNodeRoot
+      do {
+        node = node.nextChild(labels[--labelPos])
+      } while (labelPos !== 0)
+
+      node.addCookie(item)
+      this.mIdCookieMap.set(item.id, item)
+      this.mDirtySet.add(item)
+    }
+  }
+
+  /**
+   * @param {URL} urlObj 
+   */
+  query(urlObj) {
+    const ret = []
+    const now = Date.now()
+    const domain = urlObj.hostname
+    const path = urlObj.pathname
+    const isHttps = (urlObj.protocol === 'https:')
+
+    const labels = domain.split('.')
+    let labelPos = labels.length
+    let node = this.mCookieNodeRoot
+
+    do {
+      node = node.getChild(labels[--labelPos])
+      if (!node) {
+        break
+      }
+      const items = node.items
+      if (!items) {
+        continue
+      }
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (!isHttps && item.secure) {
+          continue
+        }
+        if (item.hostOnly && labelPos !== 0) {
+          continue
+        }
+        if (!isSubPath(item.path, path)) {
+          continue
+        }
+        if (item.isExpired) {
+          continue
+        }
+        if (isExpire(item, now)) {
+          item.isExpired = true
+          continue
+        }
+
+        let str = item.value
+        if (item.name) {
+          str = item.name + '=' + str
+        }
+        ret.push(str)
+      }
+    } while (labelPos !== 0)
+
+    return ret.join('; ')
+  }
+
+  getNonHttpOnlyItems() {
+    const ret = []
+    for (const item of this.mIdCookieMap.values()) {
+      if (!item.httpOnly) {
+        ret.push(item)
+      }
+    }
+    return ret
+  }
+
+  getAllItems() {
+    const ret = []
+    for (const item of this.mIdCookieMap.values()) {
+      if (item.isExpired) {
+        continue
+      }
+      ret.push(item)
+    }
+    return ret
+  }
+
+  /**
+   * @param {string} id
+   * @returns {boolean}
+   */
+  deleteById(id) {
+    const matched = this.mIdCookieMap.get(id)
+    if (!matched) {
+      return false
+    }
+    matched.isExpired = true
+    this.mIdCookieMap.delete(id)
+    this.mDirtySet.add(matched)
+    return true
+  }
+
+  /**
+   * @param {string} domain
+   * @returns {number}
+   */
+  clearByDomain(domain) {
+    if (!domain) {
+      return 0
+    }
+    let n = 0
+    for (const item of [...this.mIdCookieMap.values()]) {
+      if (item.domain === domain || isSubDomain(item.domain, domain) || isSubDomain(domain, item.domain)) {
+        item.isExpired = true
+        this.mIdCookieMap.delete(item.id)
+        this.mDirtySet.add(item)
+        n += 1
+      }
+    }
+    return n
+  }
+
+  /**
+   * @param {Database} db
+   */
+  async save(db) {
+    if (this.mDirtySet.size === 0) {
+      return
+    }
+
+    const tmp = this.mDirtySet
+    this.mDirtySet = new Set()
+
+    for (const item of tmp) {
+      if (item.isExpired) {
+        await db.delete('cookie', item.id)
+      } else if (!isNaN(item.expires)) {
+        await db.put('cookie', item)
+      }
+    }
+  }
+
+  clearMemory() {
+    this.mIdCookieMap.clear()
+    this.mCookieNodeRoot = new CookieDomainNode()
+    this.mDirtySet.clear()
+  }
+}
+
+
+/** @type {CookieJar} */
+const mJar = new CookieJar()
+
+/** @type {Database} */
+let mDB
 
 
 export function getNonHttpOnlyItems() {
-  const ret = []
-  for (const item of mIdCookieMap.values()) {
-    if (!item.httpOnly) {
-      ret.push(item)
-    }
+  return mJar.getNonHttpOnlyItems()
+}
+
+/**
+ * @returns {Cookie[]}
+ */
+export function getAllItems() {
+  return mJar.getAllItems()
+}
+
+/**
+ * Serialize cookie for DevTools (plain object).
+ * @param {Cookie} item
+ */
+export function toPublicCookie(item) {
+  return {
+    id: item.id,
+    name: item.name,
+    value: item.value,
+    domain: item.domain,
+    path: item.path,
+    expires: Number.isFinite(item.expires) ? item.expires : null,
+    secure: !!item.secure,
+    httpOnly: !!item.httpOnly,
+    sameSite: item.sameSite || '',
+    hostOnly: !!item.hostOnly,
   }
-  return ret
+}
+
+/**
+ * @param {string} id
+ * @returns {boolean}
+ */
+export function deleteById(id) {
+  return mJar.deleteById(id)
+}
+
+/**
+ * @param {string} domain
+ * @returns {Promise<number>}
+ */
+export async function clearByDomain(domain) {
+  const trimmed = typeof domain === 'string' ? domain.trim() : ''
+  if (!trimmed) {
+    throw Object.assign(new Error('domain required'), { code: 'DOMAIN_REQUIRED' })
+  }
+  const n = mJar.clearByDomain(trimmed)
+  await saveAll()
+  return n
 }
 
 
@@ -1074,12 +1504,6 @@ export function parse(str, urlObj, now) {
       key = s.substr(0, p)
       val = s.substr(p + 1)
     } else {
-      //
-      // cookie = 's; secure; httponly'
-      //  0: { key: '', val: 's' }
-      //  1: { key: 'secure', val: '' }
-      //  2: { key: 'httponly', val: '' }
-      //
       key = (i === 0) ? '' : s
       val = (i === 0) ? s : ''
     }
@@ -1124,32 +1548,22 @@ export function parse(str, urlObj, now) {
     item.isExpired = true
   }
 
-  // https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/Set-Cookie
   if (item.name.startsWith('__Secure-')) {
-    if (!(
-      urlObj.protocol === 'https:' &&
-      item.secure
-    )) {
+    if (!(urlObj.protocol === 'https:' && item.secure)) {
       return
     }
   }
   if (item.name.startsWith('__Host-')) {
-    if (!(
-      urlObj.protocol === 'https:' &&
-      item.secure &&
-      item.domain === '' &&
-      item.path === '/'
-    )) {
+    if (!(urlObj.protocol === 'https:' && item.secure &&
+        item.domain === '' && item.path === '/')) {
       return
     }
   }
 
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie#Compatibility_notes
   if (item.secure && urlObj.protocol === 'http:') {
     return
   }
 
-  // check hostname
   const domain = urlObj.hostname
 
   if (item.domain) {
@@ -1163,7 +1577,6 @@ export function parse(str, urlObj, now) {
     item.hostOnly = true
   }
 
-  // check pathname
   const path = urlObj.pathname
 
   if (item.path) {
@@ -1176,11 +1589,6 @@ export function parse(str, urlObj, now) {
     item.path = path
   }
 
-  item.id = (item.secure ? ';' : '') +
-    item.name + ';' +
-    item.domain +
-    item.path
-
   return item
 }
 
@@ -1189,101 +1597,17 @@ export function parse(str, urlObj, now) {
  * @param {Cookie} item
  */
 export function set(item) {
-  // console.log('set:', item)
-  const id = item.id
-  const matched = mIdCookieMap.get(id)
-
-  if (matched) {
-    if (item.isExpired) {
-      // delete
-      mIdCookieMap.delete(id)
-      matched.isExpired = true
-      // TODO: remove node
-    } else {
-      // update
-      copy(matched, item)
-    }
-    mDirtySet.add(matched)
-  } else {
-    // create
-    const labels = item.domain.split('.')
-    let labelPos = labels.length
-    let node = mCookieNodeRoot
-    do {
-      node = node.nextChild(labels[--labelPos])
-    } while (labelPos !== 0)
-  
-    node.addCookie(item)
-    mIdCookieMap.set(id, item)
-
-    mDirtySet.add(item)
-  }
+  mJar.set(item)
 }
 
 
 /**
- * @param {URL} urlObj 
+ * @param {URL} urlObj
  */
 export function query(urlObj) {
-  const ret = []
-  const now = Date.now()
-  const domain = urlObj.hostname
-  const path = urlObj.pathname
-  const isHttps = (urlObj.protocol === 'https:')
-
-  const labels = domain.split('.')
-  let labelPos = labels.length
-  let node = mCookieNodeRoot
-
-  do {
-    node = node.getChild(labels[--labelPos])
-    if (!node) {
-      break
-    }
-    const items = node.items
-    if (!items) {
-      continue
-    }
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      // https url | secure flag | carry
-      //   ✔       |   ✔         |   ✔
-      //   ✔       |   ✘         |   ✔
-      //   ✘       |   ✘         |   ✔
-      //   ✘       |   ✔         |   ✘
-      if (!isHttps && item.secure) {
-        continue
-      }
-      // HostOnly Cookie 需匹配完整域名
-      if (item.hostOnly && labelPos !== 0) {
-        continue
-      }
-      if (!isSubPath(item.path, path)) {
-        continue
-      }
-      if (item.isExpired) {
-        continue
-      }
-      if (isExpire(item, now)) {
-        item.isExpired = true
-        continue
-      }
-      // TODO: same site
-
-      let str = item.value
-      if (item.name) {
-        str = item.name + '=' + str
-      }
-      ret.push(str)
-    }
-  } while (labelPos !== 0)
-
-  return ret.join('; ')
+  return mJar.query(urlObj)
 }
 
-
-/** @type {Database} */
-let mDB
 
 export async function setDB(db) {
   mDB = db
@@ -1292,32 +1616,39 @@ export async function setDB(db) {
   await mDB.enum('cookie', v => {
     if (isExpire(v, now)) {
       mDB.delete('cookie', v.id)
-    } else {
-      set(v)
+      return true
     }
+    // Ignore legacy sessionId on records; re-key into the single jar.
+    v.sessionId = ''
+    mJar.set(v)
     return true
   })
 
-  setInterval(save, 1000 * 3)
+  setInterval(saveAll, 1000 * 3)
 }
 
 
-export async function save() {
-  if (mDirtySet.size === 0) {
+async function saveAll() {
+  if (!mDB) {
     return
   }
+  await mJar.save(mDB)
+}
 
-  const tmp = mDirtySet
-  mDirtySet = new Set()
 
-  for (const item of tmp) {
-    if (item.isExpired) {
-      await mDB.delete('cookie', item.id)
-    } else if (!isNaN(item.expires)) {
-      // 不保存 session cookie
-      await mDB.put('cookie', item)
-    }
+export async function clearAll() {
+  if (mDB) {
+    await mDB.enum('cookie', v => {
+      mDB.delete('cookie', v.id)
+      return true
+    })
   }
+  mJar.clearMemory()
+}
+
+/** Persist dirty cookie jar entries to IDB now. */
+export async function flush() {
+  await saveAll()
 }
 
 // ========================================================================
@@ -1601,6 +1932,12 @@ export function parseStr(code) {
     match = true
     return s + `...(self.__set_srcWin?__set_srcWin():[]), `
   })
+  // Dynamic import() → __vcImport( for Initiator stack capture.
+  // Avoid import.meta / static import by requiring word-boundary and no leading dot.
+  code = code.replace(/(^|[^\.\w$])import\s*\(/g, (_, prefix) => {
+    match = true
+    return prefix + '__vcImport('
+  })
   if (match) {
     return code
   }
@@ -1629,6 +1966,7 @@ export function parseBin(buf, charset) {
 // ========================================================================
 import * as hook from './hook.js'
 import * as urlx from './urlx.js'
+import * as MSG from './msg.js'
 
 
 const {
@@ -1638,21 +1976,125 @@ const {
   getOwnPropertyDescriptor,
 } = Reflect
 
-const undefined = void 0
+
+/** @type {((cmd: number, val: unknown) => void) | null} */
+let mSendToSw = null
+
+/** @type {string} */
+let mSiteOrigin = ''
+
+/** @type {string} */
+let mLocalPrefix = ''
+
+/** @type {string} */
+let mSessionPrefix = ''
 
 
 /**
- * @param {WindowOrWorkerGlobalScope} win 
- * @param {string} name 
- * @param {string} prefix 
+ * @param {(cmd: number, val: unknown) => void} fn
  */
-function setup(win, name, prefix) {
-  /** @type {Storage} */
+export function setStorageMessenger(fn) {
+  mSendToSw = fn
+}
+
+
+/**
+ * @param {string} siteOrigin
+ * @param {string} localPrefix
+ * @param {string} sessionPrefix
+ */
+export function setStorageContext(siteOrigin, localPrefix, sessionPrefix) {
+  mSiteOrigin = siteOrigin
+  mLocalPrefix = localPrefix
+  mSessionPrefix = sessionPrefix
+}
+
+
+/**
+ * @param {WindowOrWorkerGlobalScope} win
+ * @param {string} name
+ * @param {string} prefix
+ * @param {boolean} syncAcrossTabs
+ */
+function setup(win, name, prefix, syncAcrossTabs) {
   const raw = win[name]
   if (!raw) {
     return
   }
   const prefixLen = prefix.length
+  /** @type {Map<string, string|null>} */
+  const cache = new Map()
+
+  function persist(key, value, oldValue) {
+    if (!mSendToSw || name !== 'localStorage') {
+      return
+    }
+    if (value === null || value === undefined) {
+      mSendToSw(MSG.PAGE_STORAGE_REMOVE, { siteOrigin: mSiteOrigin, key, oldValue })
+    } else {
+      mSendToSw(MSG.PAGE_STORAGE_SET, { siteOrigin: mSiteOrigin, key, value, oldValue })
+    }
+  }
+
+  function getItem(key) {
+    if (cache.has(key)) {
+      const v = cache.get(key)
+      return v === undefined ? null : v
+    }
+    const v = raw.getItem(prefix + key)
+    if (v === null) {
+      return null
+    }
+    cache.set(key, v)
+    return v
+  }
+
+  function setItem(key, val) {
+    const oldValue = getItem(key)
+    cache.set(key, val)
+    raw.setItem(prefix + key, val)
+    if (syncAcrossTabs) {
+      persist(String(key), val, oldValue)
+    }
+  }
+
+  function removeItem(key) {
+    const oldValue = getItem(key)
+    cache.delete(key)
+    raw.removeItem(prefix + key)
+    if (syncAcrossTabs) {
+      persist(String(key), null, oldValue)
+    }
+  }
+
+  function clear() {
+    const keys = getAllKeys()
+    for (const key of keys) {
+      removeItem(key)
+    }
+    if (syncAcrossTabs && mSendToSw) {
+      mSendToSw(MSG.PAGE_STORAGE_CLEAR, { siteOrigin: mSiteOrigin })
+    }
+  }
+
+  function key(val) {
+    const arr = getAllKeys()
+    const ret = arr[val | 0]
+    return ret === undefined ? null : ret
+  }
+
+  function getAllKeys() {
+    const ret = []
+    const keys = ownKeys(raw)
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i]
+      if (typeof k !== 'string' || !k.startsWith(prefix)) {
+        continue
+      }
+      ret.push(k.substr(prefixLen))
+    }
+    return ret
+  }
 
   const nativeMap = {
     getItem,
@@ -1667,136 +2109,103 @@ function setup(win, name, prefix) {
       return getAllKeys().length
     },
   }
-  
-  /**
-   * @param {*} key 
-   */
-  function getItem(key) {
-    return raw.getItem(prefix + key)
-  }
-
-  /**
-   * @param {*} key 
-   * @param {string} val 
-   */
-  function setItem(key, val) {
-    // TODO: 同步到 indexedDB
-    raw.setItem(prefix + key, val)
-  }
-
-  /**
-   * @param {*} key 
-   */
-  function removeItem(key) {
-    return raw.removeItem(prefix + key)
-  }
-
-  function clear() {
-    getAllKeys().forEach(removeItem)
-  }
-
-  /**
-   * @param {*} val
-   */
-  function key(val) {
-    // TODO: 无需遍历所有
-    const arr = getAllKeys()
-    const ret = arr[val | 0]
-    if (ret === undefined) {
-      return null
-    }
-    return ret
-  }
-
-
-  /**
-   * @returns {string[]}
-   */
-  function getAllKeys() {
-    const ret = []
-    const keys = ownKeys(raw)
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i]
-      if (typeof key !== 'string') {
-        continue
-      }
-      if (!key.startsWith(prefix)) {
-        continue
-      }
-      ret.push(key.substr(prefixLen))
-    }
-    return ret
-  }
 
   const storage = new Proxy(raw, {
-    get(obj, key) {
-      const val = nativeMap[key]
+    get(obj, prop) {
+      const val = nativeMap[prop]
       if (val !== undefined) {
         return val
       }
-      console.log('[jsproxy] %s get: %s', name, key)
-      const ret = getItem(key)
-      if (ret === null) {
-        return undefined
-      }
-      return ret
+      const ret = getItem(prop)
+      return ret === null ? undefined : ret
     },
-    set(obj, key, val) {
-      if (key in nativeMap) {
-        nativeMap[key] = val
-        return
+    set(obj, prop, val) {
+      if (prop in nativeMap) {
+        nativeMap[prop] = val
+        return true
       }
-      console.log('[jsproxy] %s set: %s = %s', name, key, val)
-      setItem(key, val)
+      setItem(String(prop), String(val))
       return true
     },
-    deleteProperty(obj, key) {
-      console.log('[jsproxy] %s del: %s', name, key)
-      removeItem(key)
+    deleteProperty(obj, prop) {
+      removeItem(String(prop))
       return true
     },
-    has(obj, key) {
-      console.log('[jsproxy] %s has: %s', name, key)
-      if (typeof key === 'string') {
-        return (prefix + key) in obj
+    has(obj, prop) {
+      if (typeof prop === 'string') {
+        return (prefix + prop) in obj
       }
       return false
     },
-    // enumerate(obj) {
-    //   console.log('[jsproxy] %s enumerate: %s', name)
-    //   // TODO:
-    // },
-    ownKeys(obj) {
-      // console.log('[jsproxy] %s ownKeys', name)
+    ownKeys() {
       return getAllKeys()
     },
-    // defineProperty(obj, key, desc) {
-    //   // console.log('[jsproxy] %s defineProperty: %s', name, key)
-    //   // TODO:
-    // },
-    getOwnPropertyDescriptor(obj, key) {
-      // console.log('[jsproxy] %s getOwnPropertyDescriptor: %s', name, key)
-      if (typeof key === 'string') {
-        return getOwnPropertyDescriptor(raw, prefix + key)
+    getOwnPropertyDescriptor(obj, prop) {
+      if (typeof prop === 'string') {
+        return getOwnPropertyDescriptor(raw, prefix + prop)
       }
-    }
+    },
   })
 
-  defineProperty(win, name, {value: storage})
+  defineProperty(win, name, { value: storage })
+
+  return {
+    applyRemoteChange(key, value, oldValue) {
+      if (value === null || value === undefined) {
+        cache.delete(key)
+        raw.removeItem(prefix + key)
+      } else {
+        cache.set(key, value)
+        raw.setItem(prefix + key, value)
+      }
+      if (name !== 'localStorage') {
+        return
+      }
+      try {
+        const ev = new win.StorageEvent('storage', {
+          key,
+          oldValue: oldValue || null,
+          newValue: value,
+          url: win.location.href,
+          storageArea: storage,
+        })
+        win.dispatchEvent(ev)
+      } catch {
+        // ignore
+      }
+    },
+    clearAll() {
+      cache.clear()
+      const keys = ownKeys(raw)
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i]
+        if (typeof k === 'string' && k.startsWith(prefix)) {
+          raw.removeItem(k)
+        }
+      }
+    },
+  }
 }
 
 
+/** @type {{ local: ReturnType<typeof setup> | null, session: ReturnType<typeof setup> | null }} */
+const mHandles = { local: null, session: null }
+
+
 /**
- * @param {WindowOrWorkerGlobalScope} global 
- * @param {string} origin 
+ * @param {WindowOrWorkerGlobalScope} global
+ * @param {string} origin
  */
 export function createStorage(global, origin) {
-  const prefixStr = origin + '$'
-  const prefixLen = prefixStr.length
+  const localPrefix = `${origin}$`
+  const sessionPrefix = `${origin}$session$`
+  setStorageContext(origin, localPrefix, sessionPrefix)
 
+  mHandles.local = setup(global, 'localStorage', localPrefix, true)
+  mHandles.session = setup(global, 'sessionStorage', sessionPrefix, false)
 
   function delPrefix(str) {
-    return str.substr(prefixLen)
+    return str.startsWith(idbPrefix) ? str.substr(idbPrefix.length) : str
   }
 
   function delPrefixGetter(oldFn) {
@@ -1806,85 +2215,100 @@ export function createStorage(global, origin) {
     }
   }
 
-  //
-  // Web Storage
-  //
-  setup(global, 'localStorage', prefixStr)
-  setup(global, 'sessionStorage', prefixStr)
-
   const StorageEventProto = global['StorageEvent'].prototype
 
-  hook.prop(StorageEventProto, 'key', delPrefixGetter)
-  hook.prop(StorageEventProto, 'url',
-    getter => function() {
-      const val = getter.call(this)
-      return urlx.decUrlStrAbs(val)
+  hook.prop(StorageEventProto, 'key', getter => function() {
+    const val = getter.call(this)
+    if (val && val.startsWith(localPrefix)) {
+      return val.substr(localPrefix.length)
     }
-  )
-  // TODO: StorageEventProto.storageArea
+    return val
+  })
+  hook.prop(StorageEventProto, 'url', getter => function() {
+    const val = getter.call(this)
+    return urlx.decUrlStrAbs(val)
+  })
 
-  //
-  // Storage API
-  //
+  const idbPrefix = `${origin}$`
+
   function addPrefixHook(oldFn) {
     return function(name) {
       if (arguments.length > 0) {
-        arguments[0] = prefixStr + name
+        arguments[0] = idbPrefix + name
       }
       return apply(oldFn, this, arguments)
     }
   }
 
-  // indexedDB
   const IDBFactoryProto = global['IDBFactory'].prototype
   hook.func(IDBFactoryProto, 'open', addPrefixHook)
-
+  hook.func(IDBFactoryProto, 'deleteDatabase', addPrefixHook)
   hook.func(IDBFactoryProto, 'databases', oldFn => async function() {
-    /** @type { {name: string, version: number}[] } */
     const arr = await apply(oldFn, this, arguments)
     const ret = []
     for (const v of arr) {
-      if (v.name[0] !== '.') {
-        v.name = delPrefix(v.name)
+      if (v.name[0] !== '.' && v.name.startsWith(idbPrefix)) {
+        v.name = v.name.substr(idbPrefix.length)
         ret.push(v)
       }
     }
     return ret
   })
 
-  // delete
-  hook.func(IDBFactoryProto, 'deleteDatabase', addPrefixHook)
-
   const IDBDatabaseProto = global['IDBDatabase'].prototype
   hook.prop(IDBDatabaseProto, 'name', delPrefixGetter)
 
-
-  // Cache Storage
   const cacheStorageProto = global['CacheStorage'].prototype
   hook.func(cacheStorageProto, 'open', addPrefixHook)
-
+  hook.func(cacheStorageProto, 'delete', addPrefixHook)
   hook.func(cacheStorageProto, 'keys', oldFn => async function() {
-    /** @type {string[]} */
     const arr = await apply(oldFn, this, arguments)
     const ret = []
     for (const v of arr) {
-      if (v[0] !== '.') {
-        ret.push(delPrefix(v))
+      if (v[0] !== '.' && v.startsWith(idbPrefix)) {
+        ret.push(v.substr(idbPrefix.length))
       }
     }
     return ret
   })
 
-  hook.func(cacheStorageProto, 'delete', addPrefixHook)
-
-  // WebSQL
   hook.func(global, 'openDatabase', addPrefixHook)
+}
+
+
+/**
+ * @param {{ siteOrigin?: string, key?: string, value?: string|null, oldValue?: string|null, clear?: boolean }} msg
+ */
+export function handleStoragePush(msg) {
+  if (!mHandles.local) {
+    return
+  }
+  if (msg.clear && msg.siteOrigin === mSiteOrigin) {
+    mHandles.local.clearAll()
+    return
+  }
+  if (msg.siteOrigin !== mSiteOrigin || !msg.key) {
+    return
+  }
+  mHandles.local.applyRemoteChange(msg.key, msg.value, msg.oldValue)
+}
+
+
+export function clearAllStorage() {
+  if (mHandles.local) {
+    mHandles.local.clearAll()
+  }
+  if (mHandles.session) {
+    mHandles.session.clearAll()
+  }
 }
 
 // ========================================================================
 // fakeloc.js  (webpack module 12)
 // ========================================================================
 import * as urlx from "./urlx";
+import * as navReport from './vc-fakeloc-report.js'
+import * as vcReport from './vc-report.js'
 
 const {
   defineProperty,
@@ -1899,7 +2323,7 @@ function setup(obj, fakeLoc) {
     },
     set(val) {
       console.log('[jsproxy] %s set location: %s', obj, val)
-      fakeLoc.href = val
+      navReport.reportNavFromInput('href', val, fakeLoc, fakeLoc)
     }
   })
 }
@@ -1919,15 +2343,84 @@ export function createFakeLoc(global) {
     return new URL(urlx.decUrlObj(loc))
   }
 
+  function getDecodedHref() {
+    return getPageUrlObj(location).href
+  }
+
+  /**
+   * Apply hash / same-document URL changes locally (no full navigation).
+   * @param {string} method
+   * @param {string} nextHref decoded absolute URL
+   * @returns {boolean}
+   */
+  function applySameDocumentNavigation(method, nextHref) {
+    const currentHref = getDecodedHref()
+    let nextUrlObj
+    try {
+      nextUrlObj = new URL(nextHref, currentHref)
+    } catch {
+      return false
+    }
+    if (!vcReport.isSameDocumentUrl(nextUrlObj.href, currentHref)) {
+      return false
+    }
+
+    const enc = urlx.encUrlObj(nextUrlObj)
+    const prevHash = new URL(currentHref).hash
+    try {
+      global.history.replaceState(global.history.state, '', enc)
+    } catch {
+      try {
+        location.href = enc
+      } catch {
+        return false
+      }
+    }
+
+    if (prevHash !== nextUrlObj.hash) {
+      try {
+        global.dispatchEvent(
+          new HashChangeEvent('hashchange', {
+            oldURL: currentHref,
+            newURL: nextUrlObj.href,
+          }),
+        )
+      } catch {
+        // ignore
+      }
+    }
+
+    vcReport.reportHistory({
+      ts: Date.now(),
+      method,
+      url: nextUrlObj.href,
+      title: global.document && global.document.title ? global.document.title : '',
+    })
+    return true
+  }
+
+  /**
+   * @param {string} method
+   * @param {string} val
+   * @returns {boolean}
+   */
+  function trySameDocumentFromInput(method, val) {
+    try {
+      const enc = urlx.encUrlStrRel(val, locObj)
+      const decoded = urlx.decUrlStrAbs(enc)
+      return applySameDocumentNavigation(method, decoded)
+    } catch {
+      return false
+    }
+  }
+
 
   // 不缓存 location 属性，因为 beforeunload 事件会影响赋值
   const locObj = {
     get href() {
-      // console.log('[jsproxy] get location.href')
       return getPageUrlObj(location).href
     },
 
-    // TODO: 精简合并
     get protocol() {
       return getPageUrlObj(location).protocol
     },
@@ -1968,10 +2461,8 @@ export function createFakeLoc(global) {
       return this.href
     },
 
-    // TODO: Worker 中没有以下属性
     get ancestorOrigins() {
       if (!ancestorOrigins) {
-        // TODO: DOMStringList[]
         ancestorOrigins = []
 
         let p = global
@@ -1985,74 +2476,92 @@ export function createFakeLoc(global) {
 
     set href(val) {
       console.log('[jsproxy] set location.href:', val)
-      location.href = urlx.encUrlStrRel(val, this)
+      if (trySameDocumentFromInput('href', val)) {
+        return
+      }
+      navReport.reportNavFromInput('href', val, locObj, location)
     },
 
     set protocol(val) {
       console.log('[jsproxy] set location.protocol:', val)
       const urlObj = getPageUrlObj(location)
-      urlObj.href = val
-      location.href = urlx.encUrlObj(urlObj)
+      urlObj.protocol = val
+      navReport.reportNavFromUrlObj('protocol', urlObj)
     },
 
     set host(val) {
       console.log('[jsproxy] set location.host:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.host = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('host', urlObj)
     },
 
     set hostname(val) {
       console.log('[jsproxy] set location.hostname:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.hostname = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('hostname', urlObj)
     },
 
     set port(val) {
       console.log('[jsproxy] set location.port:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.port = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('port', urlObj)
     },
 
     set pathname(val) {
       console.log('[jsproxy] set location.pathname:', val)
       const urlObj = getPageUrlObj(location)
       urlObj.pathname = val
-      location.href = urlx.encUrlObj(urlObj)
+      navReport.reportNavFromUrlObj('pathname', urlObj)
     },
 
     set search(val) {
-      location.search = val
+      console.log('[jsproxy] set location.search:', val)
+      const urlObj = getPageUrlObj(location)
+      urlObj.search = val
+      navReport.reportNavFromUrlObj('search', urlObj)
     },
 
     set hash(val) {
-      location.hash = val
+      console.log('[jsproxy] set location.hash:', val)
+      const next = new URL(getDecodedHref())
+      let hash = String(val)
+      if (hash && !hash.startsWith('#')) {
+        hash = '#' + hash
+      }
+      next.hash = hash
+      applySameDocumentNavigation('hash', next.href)
     },
 
     reload() {
-      console.warn('[jsproxy] location.reload')
-      // @ts-ignore
-      return location.reload(...arguments)
+      console.warn('[jsproxy] location.reload (report only)')
+      navReport.reportCurrent('reload', location)
     },
 
     replace(val) {
+      console.warn('[jsproxy] location.replace:', val)
       if (val) {
-        console.warn('[jsproxy] location.replace:', val)
-        arguments[0] = urlx.encUrlStrRel(val, this)
+        if (trySameDocumentFromInput('replace', val)) {
+          return
+        }
+        navReport.reportNavFromInput('replace', val, locObj, location)
+      } else {
+        navReport.reportCurrent('replace', location)
       }
-      // @ts-ignore
-      return location.replace(...arguments)
     },
 
     assign(val) {
+      console.warn('[jsproxy] location.assign:', val)
       if (val) {
-        console.warn('[jsproxy] location.assign:', val)
-        arguments[0] = urlx.encUrlStrRel(val, this)
+        if (trySameDocumentFromInput('assign', val)) {
+          return
+        }
+        navReport.reportNavFromInput('assign', val, locObj, location)
+      } else {
+        navReport.reportCurrent('assign', location)
       }
-      // @ts-ignore
-      return location.assign(...arguments)
     },
   }
 
@@ -2060,10 +2569,8 @@ export function createFakeLoc(global) {
   const fakeLoc = setPrototypeOf(locObj, locProto)
   setup(global, fakeLoc)
 
-  // 非 Worker 环境
   const Document = global['Document']
   if (Document) {
-    // TODO: document.hasOwnProperty('location') 原本是 true
     setup(Document.prototype, fakeLoc)
   }
 
@@ -2078,13 +2585,105 @@ import * as route from './route.js'
 import * as env from './env.js'
 import * as hook from './hook.js'
 import {createFakeLoc} from './fakeloc.js'
-import {createStorage} from './storage.js'
+import {createStorage, setStorageMessenger, handleStoragePush, clearAllStorage} from './storage.js'
+import {captureStack, inferScriptUrl} from './vc-stack.js'
 
 
 const {
   apply,
   construct,
 } = Reflect
+
+const INITIATOR_HEADER = 'X-VC-Initiator-Id'
+
+/** @type {((tip: object) => void) | null} */
+let initiatorReporter = null
+
+/**
+ * @param {(tip: object) => void} fn
+ */
+export function setInitiatorReporter(fn) {
+  initiatorReporter = typeof fn === 'function' ? fn : null
+}
+
+function makeTipId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // ignore
+  }
+  return String(Date.now()) + '-' + Math.random().toString(16).slice(2)
+}
+
+/**
+ * Decode target URL so tip matches SW entry.url.
+ * @param {string} url
+ * @returns {string}
+ */
+function tipTargetUrl(url) {
+  if (!url) {
+    return ''
+  }
+  try {
+    const decoded = urlx.decUrlStrAbs(url)
+    if (decoded) {
+      return decoded
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    return new URL(url, typeof location !== 'undefined' ? location.href : undefined).href
+  } catch {
+    return String(url)
+  }
+}
+
+/**
+ * @param {HeadersInit|undefined} headers
+ * @param {string} id
+ * @returns {Headers}
+ */
+function withInitiatorHeader(headers, id) {
+  const h = new Headers(headers || undefined)
+  h.set(INITIATOR_HEADER, id)
+  return h
+}
+
+/**
+ * @param {{
+ *   kind: string,
+ *   method?: string,
+ *   url: string,
+ *   tipId?: string,
+ * }} opts
+ * @param {Window|WorkerGlobalScope} global
+ * @returns {string} tip id
+ */
+function reportInitiator(opts, global) {
+  const id = opts.tipId || makeTipId()
+  if (!initiatorReporter) {
+    return id
+  }
+  const stack = captureStack()
+  const scriptUrl = inferScriptUrl(stack, global)
+  try {
+    initiatorReporter({
+      id,
+      kind: opts.kind,
+      method: opts.method || 'GET',
+      url: tipTargetUrl(opts.url),
+      stack,
+      scriptUrl: tipTargetUrl(scriptUrl) || scriptUrl,
+      ts: Date.now(),
+    })
+  } catch {
+    // ignore
+  }
+  return id
+}
 
 
 /**
@@ -2094,10 +2693,25 @@ const {
  * @param {string} origin 
  */
 export function init(global, origin) {
-  // lockNative(win)
-
-  // hook Storage API
   createStorage(global, origin)
+
+  // Dynamic import() helper — jsfilter rewrites `import(` → `__vcImport(`
+  try {
+    global.__vcImport = function (specifier) {
+      const spec = String(specifier)
+      let absUrl = spec
+      try {
+        absUrl = new URL(spec, typeof location !== 'undefined' ? location.href : undefined).href
+      } catch {
+        absUrl = spec
+      }
+      reportInitiator({ kind: 'import', method: 'GET', url: absUrl }, global)
+      // webpackIgnore: keep native dynamic import (do not rewrite to chunk loader)
+      return import(/* webpackIgnore: true */ specifier)
+    }
+  } catch {
+    // ignore non-extensible globals
+  }
 
   // hook Location API
   const fakeLoc = createFakeLoc(global)
@@ -2118,8 +2732,37 @@ export function init(global, origin) {
   // hook AJAX API
   const xhrProto = global['XMLHttpRequest'].prototype
   hook.func(xhrProto, 'open', oldFn => function(_0, url) {
-    if (url) {
+    const method = arguments[0] ? String(arguments[0]).toUpperCase() : 'GET'
+    const rawUrl = url ? String(url) : ''
+    if (rawUrl && !urlx.isCaptchaPassthroughUrl(rawUrl)) {
       arguments[1] = urlx.encUrlStrRel(url, this)
+      const tipId = reportInitiator({
+        kind: 'xhr',
+        method,
+        url: rawUrl,
+      }, global)
+      this.__vcInitiatorId = tipId
+    } else {
+      this.__vcInitiatorId = ''
+    }
+    const ret = apply(oldFn, this, arguments)
+    if (this.__vcInitiatorId) {
+      try {
+        this.setRequestHeader(INITIATOR_HEADER, this.__vcInitiatorId)
+      } catch {
+        // Headers may not be writable until after open in some browsers; send hook retries.
+      }
+    }
+    return ret
+  })
+
+  hook.func(xhrProto, 'send', oldFn => function() {
+    if (this.__vcInitiatorId) {
+      try {
+        this.setRequestHeader(INITIATOR_HEADER, this.__vcInitiatorId)
+      } catch {
+        // already set or not allowed
+      }
     }
     return apply(oldFn, this, arguments)
   })
@@ -2132,19 +2775,59 @@ export function init(global, origin) {
   )
 
 
-  hook.func(global, 'fetch', oldFn => function(v) {
-    if (v) {
-      if (v.url) {
-        // v is Request
-        const newUrl = urlx.encUrlStrAbs(v.url)
-        arguments[0] = new Request(newUrl, v)
-      } else {
-        // v is string
-        // TODO: 字符串不传引用，无法获取创建时的 constructor
-        arguments[0] = urlx.encUrlStrRel(v, v)
-      }
+  hook.func(global, 'fetch', oldFn => function(input, init) {
+    if (!input) {
+      return apply(oldFn, this, arguments)
     }
-    return apply(oldFn, this, arguments)
+    const url = typeof input === 'string' ? input : input.url
+    if (!url) {
+      return apply(oldFn, this, arguments)
+    }
+    if (urlx.isCaptchaPassthroughUrl(url)) {
+      return apply(oldFn, this, arguments)
+    }
+
+    const method =
+      (init && init.method) ||
+      (typeof input !== 'string' && input.method) ||
+      'GET'
+    const tipId = reportInitiator({
+      kind: 'fetch',
+      method: String(method).toUpperCase(),
+      url,
+    }, global)
+
+    const newUrl = urlx.encUrlStrAbs(url)
+    const targetUrl = newUrl === url ? url : newUrl
+
+    if (typeof input === 'string') {
+      const headers = withInitiatorHeader(init && init.headers, tipId)
+      const nextInit = init ? { ...init, headers } : { headers }
+      return apply(oldFn, this, [targetUrl, nextInit])
+    }
+
+    /** @type {RequestInit} */
+    const reqInit = {
+      method: input.method,
+      headers: input.headers,
+      credentials: input.credentials,
+      cache: input.cache,
+      redirect: input.redirect,
+      referrer: input.referrer,
+      referrerPolicy: input.referrerPolicy,
+      integrity: input.integrity,
+      keepalive: input.keepalive,
+      signal: input.signal,
+      ...init,
+    }
+    if (input.mode !== 'navigate') {
+      reqInit.mode = input.mode
+    }
+    if (input.method !== 'GET' && input.method !== 'HEAD') {
+      reqInit.body = input.body
+    }
+    reqInit.headers = withInitiatorHeader(reqInit.headers, tipId)
+    return apply(oldFn, this, [targetUrl, reqInit])
   })
 
 
@@ -2198,6 +2881,10 @@ import * as cookie from './cookie.js'
 import * as jsfilter from './jsfilter.js'
 import * as env from './env.js'
 import * as client from './client.js'
+import * as vcReport from './vc-report.js'
+import * as passiveNav from './vc-passive-nav.js'
+import {handleStoragePush, clearAllStorage, setStorageMessenger} from './storage.js'
+import {setInitiatorReporter} from './client.js'
 
 
 const {
@@ -2329,6 +3016,9 @@ export function init(win) {
   initDoc(win, domHook)
 
 
+  // TODO: 这部分逻辑需要优化
+  let readyCallback
+
   const sw = navigator.serviceWorker
   const swCtl = sw.controller
 
@@ -2336,9 +3026,44 @@ export function init(win) {
     swCtl && swCtl.postMessage([cmd, val])
   }
 
+  setStorageMessenger(sendMsgToSw)
+  setInitiatorReporter((tip) => {
+    sendMsgToSw(MSG.PAGE_NETWORK_INITIATOR_TIP, tip)
+  })
 
-  // TODO: 这部分逻辑需要优化
-  let readyCallback
+  // Register before PAGE_INFO_PULL so SW_INFO_PUSH cannot be missed (which
+  // would clear pageWait's soft timeout via PAGE_INIT_BEG and hang forever).
+  sw.addEventListener('message', e => {
+    const [cmd, val] = e.data
+    switch (cmd) {
+    case MSG.SW_COOKIE_PUSH:
+      val.forEach(item => cookie.set(item))
+      break
+
+    case MSG.SW_INFO_PUSH:
+      val.cookies.forEach(item => cookie.set(item))
+      route.setConf(val.conf)
+      if (readyCallback) {
+        readyCallback()
+      }
+      break
+
+    case MSG.SW_STORAGE_PUSH:
+      handleStoragePush(val)
+      break
+
+    case MSG.SW_CLEAR_STATE:
+      clearAllStorage()
+      break
+
+    case MSG.SW_CONF_CHANGE:
+      route.setConf(val)
+      break
+    }
+    e.stopImmediatePropagation()
+  }, true)
+
+  sw.startMessages && sw.startMessages()
 
   function pageAsyncInit() {
     const curScript = document.currentScript
@@ -2371,30 +3096,6 @@ export function init(win) {
   pageAsyncInit()
 
 
-  sw.addEventListener('message', e => {
-    const [cmd, val] = e.data
-    switch (cmd) {
-    case MSG.SW_COOKIE_PUSH:
-      // console.log('PAGE MSG.SW_COOKIE_PUSH:', val)
-      val.forEach(cookie.set)
-      break
-
-    case MSG.SW_INFO_PUSH:
-      // console.log('PAGE MSG.SW_INFO_PUSH:', val)
-      val.cookies.forEach(cookie.set)
-      route.setConf(val.conf)
-      readyCallback()
-      break
-
-    case MSG.SW_CONF_CHANGE:
-      route.setConf(val)
-      break
-    }
-    e.stopImmediatePropagation()
-  }, true)
-
-  sw.startMessages && sw.startMessages()
-
   //
   // hook ServiceWorker
   //
@@ -2411,6 +3112,36 @@ export function init(win) {
     hook.func(swProto, 'getRegistrations', oldFn => function() {
       console.warn('access serviceWorker.getRegistrations blocked')
       return new Promise(function() {})
+    })
+  }
+
+  /**
+   * @param {History} historyObj
+   * @param {string} method
+   * @param {string} [title]
+   */
+  function reportHistoryChange(historyObj, method, title) {
+    const info = env.get(historyObj)
+    if (!info) {
+      return
+    }
+    const {loc, doc} = info
+    /** @type {unknown} */
+    let state = null
+    try {
+      state = historyObj.state
+      if (state !== undefined && state !== null) {
+        JSON.stringify(state)
+      }
+    } catch {
+      state = { __vc: 'unserializable' }
+    }
+    vcReport.reportHistory({
+      ts: Date.now(),
+      method,
+      url: urlx.decUrlObj(loc),
+      title: title || (doc ? doc.title : ''),
+      state: state === undefined ? null : state,
     })
   }
 
@@ -2449,20 +3180,35 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
           arguments[2] = urlx.encUrlObj(dstUrlObj)
         }
       }
-      return apply(oldFn, this, arguments)
+      const ret = apply(oldFn, this, arguments)
+      reportHistoryChange(this, name, typeof title === 'string' ? title : '')
+      return ret
     })
   }
   hookHistory('pushState')
   hookHistory('replaceState')
 
+  win.addEventListener('popstate', function () {
+    reportHistoryChange(win.history, 'popstate', win.document.title)
+  })
+
   //
-  // hook window.open()
+  // virtual-chromo: passive navigation — report clicks, never native navigate
   //
-  hook.func(win, 'open', oldFn => function(url) {
-    if (url) {
-      arguments[0] = urlx.encUrlStrRel(url, url)
+  hook.func(win, 'open', _oldFn => function(url, target) {
+    let dest = ''
+    try {
+      dest = url ? urlx.decUrlStrRel(String(url), location.href) : String(location.href)
+    } catch {
+      dest = url ? String(url) : ''
     }
-    return apply(oldFn, this, arguments)
+    vcReport.reportLocation({
+      ts: Date.now(),
+      method: 'open',
+      url: dest,
+      target: target ? String(target) : '',
+    })
+    return null
   })
 
   //
@@ -2514,12 +3260,10 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   //
   hook.prop(docProto, 'cookie',
     getter => function() {
-      // console.log('[jsproxy] get document.cookie')
       const {ori} = env.get(this)
       return cookie.query(ori)
     },
     setter => function(val) {
-      // console.log('[jsproxy] set document.cookie:', val)
       const {ori} = env.get(this)
       const item = cookie.parse(val, ori, Date.now())
       if (item) {
@@ -2549,6 +3293,14 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   const msgEventProto = win['MessageEvent'].prototype
   hook.prop(msgEventProto, 'origin',
     getter => function() {
+      const realOrigin = getter.call(this)
+      try {
+        if (urlx.isCaptchaVendorHost(new URL(realOrigin).hostname)) {
+          return realOrigin
+        }
+      } catch {
+        // ignore invalid origin strings
+      }
       const {ori} = env.get(this)
       return ori.origin
     }
@@ -2556,8 +3308,16 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
 
   hook.func(win, 'postMessage', oldFn => function(msg, origin) {
+    if (origin && origin !== '*') {
+      try {
+        if (urlx.isCaptchaVendorHost(new URL(origin).hostname)) {
+          return apply(oldFn, this, arguments)
+        }
+      } catch {
+        // ignore invalid targetOrigin strings
+      }
+    }
     const srcWin = top['__get_srcWin']() || this
-    // console.log(srcWin)
     if (origin && origin !== '*') {
       arguments[1] = '*'
     }
@@ -2631,6 +3391,32 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     })
   }
 
+  function hookFrameSrc(tag, proto) {
+    domHook.attr(tag, proto, {
+      name: 'src',
+      onget(val) {
+        if (val === null) {
+          return ''
+        }
+        const {doc} = env.get(this)
+        if (urlx.isCaptchaPassthroughUrl(val, doc.baseURI)) {
+          return val
+        }
+        return urlx.decUrlStrRel(val, this)
+      },
+      onset(val) {
+        if (val === '') {
+          return val
+        }
+        const {doc} = env.get(this)
+        if (urlx.isCaptchaPassthroughUrl(val, doc.baseURI)) {
+          return val
+        }
+        return urlx.encUrlStrRel(val, this)
+      }
+    })
+  }
+
   const anchorProto = win['HTMLAnchorElement'].prototype
   hookAttr('A', anchorProto, 'href')
 
@@ -2642,15 +3428,18 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
   const scriptProto = win['HTMLScriptElement'].prototype
   const linkProto = win['HTMLLinkElement'].prototype
+  const imgProto = win['HTMLImageElement'].prototype
+  const sourceProto = win['HTMLSourceElement'] && win['HTMLSourceElement'].prototype
 
-  // 防止混合内容
-  if (oriUrlObj.protocol === 'http:') {
-    hookAttr('SCRIPT', scriptProto, 'src')
-    hookAttr('LINK', linkProto, 'href')
+  // Always rewrite asset URLs through the proxy. The old `http:`-only guard was for
+  // mixed-content when the proxy is HTTPS and the site is HTTP; for HTTPS sites it
+  // left <script>/<link>/<img> on the real origin, so SW Network saw almost nothing.
+  hookAttr('SCRIPT', scriptProto, 'src')
+  hookAttr('LINK', linkProto, 'href')
+  hookAttr('IMG', imgProto, 'src')
+  if (sourceProto) {
+    hookAttr('SOURCE', sourceProto, 'src')
   }
-
-  // const imgProto = win.HTMLImageElement.prototype
-  // hookAttr('IMG', imgProto, 'src')
 
   const embedProto = win['HTMLEmbedElement'].prototype
   hookAttr('EMBED', embedProto, 'src')
@@ -2659,10 +3448,10 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hookAttr('OBJECT', objectProto, 'data')
 
   const iframeProto = win['HTMLIFrameElement'].prototype
-  hookAttr('IFRAME', iframeProto, 'src')
+  hookFrameSrc('IFRAME', iframeProto)
 
   const frameProto = win['HTMLFrameElement'].prototype
-  hookAttr('FRAME', frameProto, 'src')
+  hookFrameSrc('FRAME', frameProto)
 
 
   // 更新默认的 baseURI
@@ -2746,42 +3535,40 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hookAnchorUrlProp(areaProto)
 
 
-  // 该 form 可能没有经过 MutationObserver 处理
-  hook.func(formProto, 'submit', oldFn => function() {
-    this.action = this.action
-    return apply(oldFn, this, arguments)
+  // virtual-chromo: report form submit intent, do not navigate
+  hook.func(formProto, 'submit', _oldFn => function() {
+    let action = ''
+    try {
+      this.action = this.action
+      action = urlx.decUrlStrRel(this.action || location.href, this)
+    } catch {
+      action = this.action || ''
+    }
+    vcReport.reportLocation(
+      vcReport.buildFormSubmitPayload(this, action || location.href),
+    )
   })
   
 
   //
-  // 监控 离屏元素.click() 方式打开页面
-  // 例如：
-  //  var s = document.createElement('div')
-  //  s.innerHTML = '<a href="https://google.com"><img></a>'
-  //  s.getElementsByTagName('img')[0].click()
+  // 监控 离屏 / 程序化 element.click() — 只上报 VC_CLICK，不调原生 click
   //
   const htmlProto = win['HTMLElement'].prototype
 
-  hook.func(htmlProto, 'click', oldFn => function() {
-    /** @type {HTMLAnchorElement} */
+  hook.func(htmlProto, 'click', _oldFn => function vcClick() {
+    /** @type {HTMLElement} */
     let el = this
+    const interactive = el.closest
+      ? el.closest('a,area,button,input,select,textarea,label')
+      : el
+    const target = interactive || el
+    vcReport.reportClick(vcReport.buildClickPayload(target))
 
-    // 添加到文档时已经过 MutationObserver 处理
-    // 无需调整 href 属性
-    if (el.isConnected) {
+    const tag = target.tagName
+    if (tag === 'A' || tag === 'AREA') {
       return
     }
-    while (el) {
-      const tag = el.tagName
-      if (tag === 'A' || tag === 'AREA') {
-        // eslint-disable-next-line no-self-assign
-        el.href = el.href
-        break
-      }
-      // @ts-ignore
-      el = el.parentNode
-    }
-    return apply(oldFn, this, arguments)
+    vcReport.dispatchSyntheticClick(el, win)
   })
 
 
@@ -2921,6 +3708,8 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   //     hookEvent(v)
   //   }
   // })
+
+  passiveNav.installTrustedClickCapture(document)
 }
 
 // ========================================================================
@@ -3072,6 +3861,8 @@ import * as urlx from './urlx.js'
 import * as util from './util'
 import * as tld from './tld.js'
 import * as cdn from './cdn.js'
+import * as httpCache from './http-cache-policy.js'
+import * as fetchCtx from './network-fetch-context.js'
 import {Database} from './database.js'
 
 
@@ -3106,10 +3897,21 @@ export async function setDB(db) {
 
 
 /**
+ * @param {string} url
+ */
+function cacheKey(url) {
+  return url
+}
+
+
+/**
  * @param {string} url 
  */
 function getUrlCache(url) {
-  return mDB.get('url-cache', url)
+  if (!mDB) {
+    return Promise.resolve(undefined)
+  }
+  return mDB.get('url-cache', cacheKey(url))
 }
 
 
@@ -3120,7 +3922,17 @@ function getUrlCache(url) {
  * @param {number} expires 
  */
 async function setUrlCache(url, host, info, expires) {
-  await mDB.put('url-cache', {url, host, info, expires})
+  if (!mDB) {
+    return
+  }
+  const key = cacheKey(url)
+  await mDB.put('url-cache', {
+    url: key,
+    targetUrl: url,
+    host,
+    info,
+    expires,
+  })
 }
 
 
@@ -3128,7 +3940,29 @@ async function setUrlCache(url, host, info, expires) {
  * @param {string} url 
  */
 async function delUrlCache(url) {
-  await mDB.delete('url-cache', url)
+  if (!mDB) {
+    return
+  }
+  await mDB.delete('url-cache', cacheKey(url))
+}
+
+
+/**
+ * Clear all proxy node url-cache entries.
+ */
+export async function clearUrlCache() {
+  if (!mDB) {
+    return
+  }
+  await mDB.enum('url-cache', rec => {
+    mDB.delete('url-cache', rec.url)
+    return true
+  })
+}
+
+/** @deprecated */
+export async function destroySessionCache(_sessionId) {
+  await clearUrlCache()
 }
 
 
@@ -3151,34 +3985,6 @@ function getReqCookie(targetUrlObj, clientUrlObj, req) {
     }
   }
   return cookie.query(targetUrlObj)
-}
-
-
-/**
- * @param {Headers} header 
- */
-function parseResCache(header) {
-  const cacheStr = header.get('cache-control')
-  if (cacheStr) {
-    if (/no-cache/i.test(cacheStr)) {
-      return -1
-    }
-    const m = cacheStr.match(/(?:^|,\s*)max-age=["]?(\d+)/i)
-    if (m) {
-      const sec = +m[1]
-      if (sec > 0) {
-        return sec
-      }
-    }
-  }
-  const expires = header.get('expires')
-  if (expires) {
-    const ts = Date.parse(expires)
-    if (ts > 0) {
-      return (ts - Date.now()) / 1000 | 0
-    }
-  }
-  return 0
 }
 
 
@@ -3326,6 +4132,10 @@ function initReqHdr(req, urlObj, cliUrlObj) {
     if (key === 'user-agent') {
       return
     }
+    // Internal correlation header — never forward to upstream gateway.
+    if (key === 'x-vc-initiator-id') {
+      return
+    }
     if (isSimpleReqHdr(key, val)) {
       reqHdr.set(key, val)
     } else {
@@ -3376,6 +4186,7 @@ export async function launch(req, urlObj, cliUrlObj) {
   const reqOpt = {
     mode: 'cors',
     method,
+    cache: fetchCtx.getFetchContext().disableCache ? 'no-store' : 'default',
   }
 
   if (method === 'POST' && !req.bodyUsed) {
@@ -3397,7 +4208,7 @@ export async function launch(req, urlObj, cliUrlObj) {
     // 非 HTTP 协议的资源，直接访问
     // 例如 youtube 引用了 chrome-extension: 协议的脚本
     const res = await fetch(req)
-    return {res}
+    return {res, source: 'native'}
   }
 
   const url = urlObj.href
@@ -3427,7 +4238,7 @@ export async function launch(req, urlObj, cliUrlObj) {
       const res = await cdn.proxyDirect(url)
       if (res) {
         setUrlCache(url, '', '', 0)
-        return {res}
+        return {res, source: 'direct'}
       }
     }
 
@@ -3438,7 +4249,7 @@ export async function launch(req, urlObj, cliUrlObj) {
       const res = await cdn.proxyStatic(urlHash, ver)
       if (res) {
         setUrlCache(url, '', '', 0)
-        return {res}
+        return {res, source: 'cdn'}
       }
     }
 
@@ -3525,7 +4336,7 @@ export async function launch(req, urlObj, cliUrlObj) {
 
 
   if (method === 'GET' && status === 200) {
-    const cacheSec = parseResCache(headers)
+    const cacheSec = httpCache.parseResCacheSeconds(headers)
     if (cacheSec >= 0) {
       const expires = util.getTimeSeconds() + cacheSec + 1000
       setUrlCache(url, host, rawInfo, expires)
@@ -3551,7 +4362,7 @@ export async function launch(req, urlObj, cliUrlObj) {
     }
   }
 
-  return {res, status, headers, cookies}
+  return {res, status, headers, cookies, source: 'proxy', sourceHost: host || ''}
 }
 
 // ========================================================================
@@ -3595,6 +4406,17 @@ filesystem: \
 chrome-extension-resource: \
 `
 
+// CAPTCHA widget iframes load directly from vendor (see page.js hookFrameSrc).
+const CAPTCHA_FRAME_SRC = `\
+https://challenges.cloudflare.com \
+https://challenges.fed.cloudflare.com \
+https://challenges.cloudflare-cn.com \
+https://www.google.com \
+https://www.gstatic.com \
+https://www.recaptcha.net \
+https://recaptcha.net \
+`
+
 /**
  * @param {URL} urlObj 
  * @param {number} pageId 
@@ -3607,7 +4429,7 @@ export function getHtmlCode(urlObj, pageId) {
 <!-- JS PROXY HELPER -->
 <!doctype html>
 <link rel="icon" href="${icoUrl}" type="image/x-icon">
-<meta http-equiv="content-security-policy" content="frame-src ${CSP}; object-src ${CSP}">
+<meta http-equiv="content-security-policy" content="frame-src ${CSP}${CAPTCHA_FRAME_SRC}; object-src ${CSP}">
 <base href="${urlObj.href}">
 <script data-id="${pageId}" src="${path.HELPER}"></script>
 ${custom}
@@ -3625,9 +4447,14 @@ import * as urlx from './urlx.js'
 import * as util from './util.js'
 import * as cookie from './cookie.js'
 import * as network from './network.js'
+import * as networkLog from './network-log.js'
+import * as networkInitiator from './network-initiator.js'
+import * as netCache from './network-response-cache.js'
+import * as fetchCtx from './network-fetch-context.js'
 import * as MSG from './msg.js'
 import * as jsfilter from './jsfilter.js'
 import * as inject from './inject.js'
+import * as sessionStorage from './session-storage.js'
 import {Signal} from './signal.js'
 import {Database} from './database.js'
 
@@ -3669,25 +4496,43 @@ function genPageId() {
   return ++pageCounter
 }
 
+/** Soft deadline if PAGE_INIT_BEG never arrives (e.g. no JS). */
+const PAGE_WAIT_SOFT_MS = 2000
+/** Hard deadline after PAGE_INIT_BEG — must never hang the HTML stream forever. */
+const PAGE_WAIT_HARD_MS = 8000
+
 /**
- * @param {number} pageId 
+ * @param {number} pageId
  */
 function pageWait(pageId) {
   const s = new Signal()
-  // 设置最大等待时间
-  // 有些页面不会执行 JS（例如查看源文件），导致永久等待
-  const timer = setTimeout(_ => {
-    pageWaitMap.delete(pageId)
-    s.notify(false)
-  }, 2000)
+  let settled = false
 
-  pageWaitMap.set(pageId, [s, timer])
+  /**
+   * @param {boolean} ok
+   */
+  function finish(ok) {
+    if (settled) {
+      return
+    }
+    settled = true
+    const arr = pageWaitMap.get(pageId)
+    if (arr) {
+      clearTimeout(arr[1])
+      pageWaitMap.delete(pageId)
+    }
+    s.notify(ok)
+  }
+
+  // 有些页面不会执行 JS（例如查看源文件），导致永久等待
+  const timer = setTimeout(() => finish(false), PAGE_WAIT_SOFT_MS)
+  pageWaitMap.set(pageId, [s, timer, finish])
   return s.wait()
 }
 
 /**
- * @param {number} id 
- * @param {boolean} isDone 
+ * @param {number} id
+ * @param {boolean} isDone
  */
 function pageNotify(id, isDone) {
   const arr = pageWaitMap.get(id)
@@ -3695,14 +4540,16 @@ function pageNotify(id, isDone) {
     console.warn('[jsproxy] unknown page id:', id)
     return
   }
-  const [s, timer] = arr
+  const [, timer, finish] = arr
   if (isDone) {
-    pageWaitMap.delete(id)
-    s.notify(true)
-  } else {
-    // 页面已开始初始化，关闭定时器
-    clearTimeout(timer)
+    finish(true)
+    return
   }
+  // PAGE_INIT_BEG: extend deadline, but never clear it entirely (nested iframe
+  // can miss SW_INFO_PUSH and would otherwise white-screen forever).
+  clearTimeout(timer)
+  const hardTimer = setTimeout(() => finish(false), PAGE_WAIT_HARD_MS)
+  pageWaitMap.set(id, [arr[0], hardTimer, finish])
 }
 
 
@@ -3717,35 +4564,47 @@ function makeHtmlRes(body, status = 200) {
 
 
 /**
- * @param {Response} res 
- * @param {ResponseInit} resOpt 
- * @param {URL} urlObj 
+ * @param {Response} res
+ * @param {ResponseInit} resOpt
+ * @param {URL} urlObj
+ * @param {(() => void)=} onReady
  */
-function processHtml(res, resOpt, urlObj) {
+function processHtml(res, resOpt, urlObj, onReady, onComplete) {
   const reader = res.body.getReader()
   let injected = false
+  let size = 0
+  /** @type {Uint8Array[]} */
+  const chunks = []
 
   const stream = new ReadableStream({
     async pull(controller) {
       if (!injected) {
         injected = true
 
-        // 注入页面顶部的代码
         const pageId = genPageId()
         const buf = inject.getHtmlCode(urlObj, pageId)
+        size += buf.byteLength
+        chunks.push(new Uint8Array(buf))
         controller.enqueue(buf)
 
-        // 留一些时间给页面做异步初始化
         const done = await pageWait(pageId)
         if (!done) {
           console.warn('[jsproxy] page wait timeout. id: %d url: %s',
             pageId, urlObj.href)
         }
+        if (onReady) {
+          onReady()
+        }
       }
       const r = await reader.read()
       if (r.done) {
+        if (onComplete) {
+          onComplete(size, chunks)
+        }
         controller.close()
       } else {
+        size += r.value.byteLength
+        chunks.push(r.value)
         controller.enqueue(r.value)
       }
     }
@@ -3766,18 +4625,17 @@ function processJs(buf, charset) {
 
 
 /**
- * @param {*} cmd 
- * @param {*} msg 
+ * @param {*} cmd
+ * @param {*} msg
  * @param {string=} srcId
  */
 async function sendMsgToPages(cmd, msg, srcId) {
-  // 通知页面更新 Cookie
   const pages = await clients.matchAll({type: 'window'})
 
+  // Deliver to every window client (viewer shell + nested content).
+  // Filtering to top-level broke cookie/storage sync and Network pushes
+  // when virtual-chromo is embedded as a nested iframe.
   for (const page of pages) {
-    if (page.frameType !== 'top-level') {
-      continue
-    }
     if (srcId && page.id === srcId) {
       continue
     }
@@ -3804,48 +4662,87 @@ async function getUrlByClientId(id) {
 
 
 /**
- * @param {string} jsonStr 
- * @param {number} status 
- * @param {URL} urlObj 
+ * @param {string} jsonStr
+ * @param {number} status
+ * @param {URL} urlObj
+ * @returns {{ code: string, text: string, html: string }}
  */
-function parseGatewayError(jsonStr, status, urlObj) {
-  let ret = ''
-  const {
-    msg, addr, url
-  } = JSON.parse(jsonStr)
+function describeGatewayError(jsonStr, status, urlObj) {
+  let text = ''
+  let code = 'GATEWAY_ERROR'
+  let msg = ''
+  let addr = ''
+  let url = ''
+  try {
+    const parsed = JSON.parse(jsonStr)
+    msg = typeof parsed.msg === 'string' ? parsed.msg : ''
+    addr = typeof parsed.addr === 'string' ? parsed.addr : ''
+    url = typeof parsed.url === 'string' ? parsed.url : ''
+  } catch (err) {
+    return {
+      code: 'GATEWAY_PARSE_ERROR',
+      text: '网关错误信息无法解析',
+      html: '网关错误信息无法解析',
+    }
+  }
+
+  if (msg) {
+    code = 'GATEWAY_' + msg
+  } else {
+    code = 'GATEWAY_HTTP_' + status
+  }
 
   switch (status) {
   case 204:
     switch (msg) {
     case 'ORIGIN_NOT_ALLOWED':
-      ret = '当前域名不在服务器外链白名单'
+      text = '当前域名不在服务器外链白名单'
       break
     case 'CIRCULAR_DEPENDENCY':
-      ret = '当前请求出现循环代理'
+      text = '当前请求出现循环代理'
       break
     case 'SITE_MOVE':
-      ret = `当前站点移动到: <a href="${url}">${url}</a>`
+      text = '当前站点移动到: ' + url
       break
+    default:
+      text = msg || '网关拒绝请求'
     }
     break
   case 500:
-    ret = '代理服务器内部错误'
+    text = '代理服务器内部错误'
     break
   case 502:
     if (addr) {
-      ret = `代理服务器无法连接网站 ${urlObj.origin} (${addr})`
+      text = '代理服务器无法连接网站 ' + urlObj.origin + ' (' + addr + ')'
     } else {
-      ret = `代理服务器无法解析域名 ${urlObj.host}`
+      text = '代理服务器无法解析域名 ' + urlObj.host
     }
     break
   case 504:
-    ret = `代理服务器连接网站超时 ${urlObj.origin}`
+    text = '代理服务器连接网站超时 ' + urlObj.origin
     if (addr) {
-      ret += ` (${addr})`
+      text += ' (' + addr + ')'
     }
     break
+  default:
+    text = msg || ('网关错误 HTTP ' + status)
   }
-  return makeHtmlRes(ret)
+
+  let html = text
+  if (status === 204 && msg === 'SITE_MOVE' && url) {
+    html = '当前站点移动到: <a href="' + url + '">' + url + '</a>'
+  }
+  return { code, text, html }
+}
+
+/**
+ * @param {string} jsonStr
+ * @param {number} status
+ * @param {URL} urlObj
+ */
+function parseGatewayError(jsonStr, status, urlObj) {
+  const info = describeGatewayError(jsonStr, status, urlObj)
+  return makeHtmlRes(info.html)
 }
 
 
@@ -3856,119 +4753,387 @@ function parseGatewayError(jsonStr, status, urlObj) {
  * @param {number} redirNum
  * @returns {Promise<Response>}
  */
-async function forward(req, urlObj, cliUrlObj, redirNum) {
-  const r = await network.launch(req, urlObj, cliUrlObj)
-  if (!r) {
-    return makeHtmlRes('load fail')
-  }
-  let {
-    res, status, headers, cookies
-  } = r
+networkLog.setEmitter(function (entry) {
+  sendMsgToPages(MSG.SW_NETWORK_PUSH, entry)
+})
 
-  if (cookies) {
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies)
-  }
 
-  if (!status) {
-    status = res.status || 200
-  }
-
-  let headersMutable = true
-  if (!headers) {
-    headers = res.headers
-    headersMutable = false
-  }
+/**
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {URL} cliUrlObj
+ * @param {number} redirNum
+ * @param {string=} clientId
+ * @param {string=} hotKeyUrl
+ * @returns {Promise<Response>}
+ */
+async function forward(req, urlObj, cliUrlObj, redirNum, clientId, hotKeyUrl) {
+  const isTurnstile = isPassthroughHost(urlObj.hostname)
+  const startMs = Date.now()
+  const entryId = networkLog.makeId()
+  const devtoolsCtx = netCache.resolveContext(clientId || '')
+  const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
+  const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
+  const cacheUrl = hotKeyUrl || netCache.normalizeHotUrl(urlObj.href)
+  const pageUrl = cliUrlObj && cliUrlObj.href ? urlx.decUrlStrAbs(cliUrlObj.href) || cliUrlObj.href : ''
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, pageUrl)
+  /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
+  const timingMarks = {}
 
   /**
-   * @param {string} k 
-   * @param {string} v 
+   * @param {{ finishedAt?: number }} [extra]
    */
-  const setHeader = (k, v) => {
-    if (!headersMutable) {
-      headers = new Headers(headers)
-      headersMutable = true
-    }
-    headers.set(k, v)
-  }
+  const currentTiming = (extra) => networkLog.buildTiming(startMs, {
+    ...timingMarks,
+    ...(extra || {}),
+  })
 
-  // 网关错误
-  const gwErr = headers.get('gateway-err--')
-  if (gwErr) {
-    return parseGatewayError(gwErr, status, urlObj)
-  }
+  fetchCtx.setFetchContext({ disableCache })
+  try {
+    networkLog.record(req, urlObj, null, startMs, {
+      pending: true,
+      id: entryId,
+      devtoolsId,
+      timing: currentTiming(),
+      ...initiatorMeta,
+    })
 
-  /** @type {ResponseInit} */
-  const resOpt = {status, headers}
-
-  // 空响应
-  // https://fetch.spec.whatwg.org/#statuses
-  if (status === 101 ||
-      status === 204 ||
-      status === 205 ||
-      status === 304
-  ) {
-    return new Response(null, resOpt)
-  }
-
-  // 处理重定向
-  if (status === 301 ||
-      status === 302 ||
-      status === 303 ||
-      status === 307 ||
-      status === 308
-  ) {
-    const locStr = headers.get('location')
-    const locObj = locStr && urlx.newUrl(locStr, urlObj)
-    if (locObj) {
-      // 跟随模式，返回最终数据
-      if (req.redirect === 'follow') {
-        if (++redirNum === MAX_REDIR) {
-          return makeHtmlRes('重定向过多', 500)
+    if (!disableCache && req.method === 'GET') {
+      const hot = await netCache.getHot(req.method, cacheUrl)
+      if (hot) {
+        const now = Date.now()
+        timingMarks.startedAt = now
+        timingMarks.responseAt = now
+        const buf = await hot.arrayBuffer()
+        const chunks = [new Uint8Array(buf)]
+        const resOpt = {
+          status: hot.status,
+          headers: hot.headers,
         }
-        return forward(req, locObj, cliUrlObj, redirNum)
+        await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
+          fromCache: true,
+          source: 'cache',
+          hotKeyUrl: cacheUrl,
+          timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
+        })
+        return netCache.responseFromChunks(resOpt, chunks)
       }
-      // 不跟随模式（例如页面跳转），返回 30X 状态
-      setHeader('location', urlx.encUrlObj(locObj))
     }
 
-    // firefox, safari 保留内容会提示页面损坏
-    return new Response(null, resOpt)
+    timingMarks.startedAt = Date.now()
+    const r = await network.launch(req, urlObj, cliUrlObj)
+    if (!r) {
+      networkLog.record(req, urlObj, null, startMs, {
+        failed: true,
+        id: entryId,
+        devtoolsId,
+        errorCode: 'ERR_PROXY_FETCH_FAILED',
+        errorText: '无法连接代理网关',
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+      })
+      if (isTurnstile) {
+        return new Response('load fail', {
+          status: 502,
+          headers: {
+            'access-control-allow-origin': '*',
+            'content-type': 'text/plain',
+          },
+        })
+      }
+      return makeHtmlRes('load fail')
+    }
+    timingMarks.responseAt = Date.now()
+    let {
+      res, status, headers, cookies
+    } = r
+    const launchSource = typeof r.source === 'string' ? r.source : 'proxy'
+    const launchSourceHost = typeof r.sourceHost === 'string' ? r.sourceHost : ''
+
+    if (cookies) {
+      sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies)
+    }
+
+    if (!status) {
+      status = res.status || 200
+    }
+
+    let headersMutable = true
+    if (!headers) {
+      headers = res.headers
+      headersMutable = false
+    }
+
+    /**
+     * @param {string} k
+     * @param {string} v
+     */
+    const setHeader = (k, v) => {
+      if (!headersMutable) {
+        headers = new Headers(headers)
+        headersMutable = true
+      }
+      headers.set(k, v)
+    }
+
+    const gwErr = headers.get('gateway-err--')
+    if (gwErr) {
+      const gwInfo = describeGatewayError(gwErr, status, urlObj)
+      networkLog.record(req, urlObj, res, startMs, {
+        failed: true,
+        id: entryId,
+        devtoolsId,
+        source: launchSource,
+        sourceHost: launchSourceHost,
+        errorCode: gwInfo.code,
+        errorText: gwInfo.text,
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+      })
+      return parseGatewayError(gwErr, status, urlObj)
+    }
+
+    /** @type {ResponseInit} */
+    const resOpt = {status, headers}
+
+    /**
+     * @param {Uint8Array[]} chunks
+     * @param {{ fromCache?: boolean, failed?: boolean }} [extra]
+     */
+    const storeAndFinish = async (chunks, extra) => {
+      await storeNetworkResponse(
+        req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
+          ...(extra || {}),
+          source: launchSource,
+          sourceHost: launchSourceHost,
+          hotKeyUrl: cacheUrl,
+          timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
+        },
+      )
+    }
+
+    /**
+     * @param {{ size?: number, failed?: boolean, hasBody?: boolean, fromCache?: boolean }} [extra]
+     */
+    const finishEntry = (extra) => {
+      networkLog.record(req, urlObj, res, startMs, {
+        id: entryId,
+        devtoolsId,
+        source: launchSource,
+        sourceHost: launchSourceHost,
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+        ...(extra || {}),
+      })
+    }
+
+    /**
+     * @param {ReadableStream|null|undefined} body
+     * @returns {ReadableStream|null|undefined}
+     */
+    const bodyWithCapture = (body) => {
+      if (!body) {
+        void storeAndFinish([])
+        return body
+      }
+      return netCache.tapBodyCapture(body, (size, chunks) => {
+        void storeAndFinish(chunks)
+      })
+    }
+
+    if (status === 101 ||
+        status === 204 ||
+        status === 205 ||
+        status === 304
+    ) {
+      finishEntry({ size: 0 })
+      return new Response(null, resOpt)
+    }
+
+    if (status === 301 ||
+        status === 302 ||
+        status === 303 ||
+        status === 307 ||
+        status === 308
+    ) {
+      const locStr = headers.get('location')
+      const locObj = locStr && urlx.newUrl(locStr, urlObj)
+      if (locObj) {
+        if (req.redirect === 'follow') {
+          finishEntry({ size: 0 })
+          if (++redirNum === MAX_REDIR) {
+            return makeHtmlRes('重定向过多', 500)
+          }
+          return forward(req, locObj, cliUrlObj, redirNum, clientId, cacheUrl)
+        }
+        setHeader('location', urlx.encUrlObj(locObj))
+      }
+
+      finishEntry({ size: 0 })
+      return new Response(null, resOpt)
+    }
+
+    const ctVal = headers.get('content-type') || ''
+    const [, mime, charset] = ctVal
+      .toLocaleLowerCase()
+      .match(/([^;]*)(?:.*?charset=['"]?([^'"]+))?/) || []
+
+
+    const type = req.destination
+    if (type === 'script' ||
+        type === 'worker' ||
+        type === 'sharedworker'
+    ) {
+      const buf = await res.arrayBuffer()
+      const ret = processJs(buf, charset)
+
+      setHeader('content-type', 'text/javascript')
+      const chunks = [new Uint8Array(ret)]
+      await storeAndFinish(chunks)
+      return new Response(ret, resOpt)
+    }
+
+    if (req.mode === 'navigate' && mime === 'text/html') {
+      if (isTurnstile) {
+        applyTurnstileCorsHeaders(setHeader)
+        finishEntry()
+        return new Response(bodyWithCapture(res.body), resOpt)
+      }
+      return processHtml(
+        res,
+        resOpt,
+        urlObj,
+        () => {
+          finishEntry()
+        },
+        (size, chunks) => {
+          void storeAndFinish(chunks)
+        },
+      )
+    }
+
+    if (isTurnstile) {
+      applyTurnstileCorsHeaders(setHeader)
+    }
+    finishEntry()
+    return new Response(bodyWithCapture(res.body), resOpt)
+  } finally {
+    fetchCtx.resetFetchContext()
   }
-
-  //
-  // 提取 mime 和 charset（不存在则为 undefined）
-  // 可能存在多个段，并且值可能包含引号。例如：
-  // content-type: text/html; ...; charset="gbk"
-  //
-  const ctVal = headers.get('content-type') || ''
-  const [, mime, charset] = ctVal
-    .toLocaleLowerCase()
-    .match(/([^;]*)(?:.*?charset=['"]?([^'"]+))?/)
-
-
-  const type = req.destination
-  if (type === 'script' ||
-      type === 'worker' ||
-      type === 'sharedworker'
-  ) {
-    const buf = await res.arrayBuffer()
-    const ret = processJs(buf, charset)
-
-    setHeader('content-type', 'text/javascript')
-    return new Response(ret, resOpt)
-  }
-
-  if (req.mode === 'navigate' && mime === 'text/html') {
-    return processHtml(res, resOpt, urlObj)
-  }
-
-  return new Response(res.body, resOpt)
 }
 
 
+/**
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {number} startMs
+ * @param {string} entryId
+ * @param {string} devtoolsId
+ * @param {boolean} disableCache
+ * @param {ResponseInit} resOpt
+ * @param {Uint8Array[]} chunks
+ * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string, hotKeyUrl?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} [extra]
+ */
+async function storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, extra) {
+  const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  let hasBody = false
+  let hotStored = false
+  const cacheUrl =
+    extra && typeof extra.hotKeyUrl === 'string' && extra.hotKeyUrl
+      ? extra.hotKeyUrl
+      : netCache.normalizeHotUrl(urlObj.href)
+  if (netCache.shouldStoreBody(size) && chunks.length) {
+    const snapshot = netCache.responseFromChunks(resOpt, chunks)
+    hasBody = await netCache.putArchive(entryId, snapshot)
+    if (
+      !disableCache &&
+      req.method === 'GET' &&
+      !(extra && extra.fromCache)
+    ) {
+      hotStored = await netCache.putHot(req.method, cacheUrl, snapshot, {
+        reqHeaders: req.headers,
+      })
+    }
+  }
+  let source = extra && typeof extra.source === 'string' ? extra.source : ''
+  if (!source) {
+    if (extra && extra.fromCache) {
+      source = 'cache'
+    } else if (extra && extra.bypass) {
+      source = 'bypass'
+    } else {
+      source = 'proxy'
+    }
+  }
+  networkLog.record(req, urlObj, {
+    status: resOpt.status || 200,
+    statusText: typeof resOpt.statusText === 'string' ? resOpt.statusText : '',
+  }, startMs, {
+    id: entryId,
+    devtoolsId,
+    size,
+    hasBody,
+    hotStored: !!(extra && extra.fromCache) || hotStored,
+    bypass: !!(extra && extra.bypass),
+    fromCache: !!(extra && extra.fromCache),
+    failed: !!(extra && extra.failed),
+    source,
+    sourceHost: extra && typeof extra.sourceHost === 'string' ? extra.sourceHost : '',
+    timing: extra && extra.timing
+      ? extra.timing
+      : networkLog.buildTiming(startMs, { finishedAt: Date.now() }),
+    initiatorKind: extra && typeof extra.initiatorKind === 'string' ? extra.initiatorKind : undefined,
+    initiatorChain: extra && Array.isArray(extra.initiatorChain) ? extra.initiatorChain : undefined,
+    initiatorStack: extra && Array.isArray(extra.initiatorStack) ? extra.initiatorStack : undefined,
+    initiatorScriptUrl:
+      extra && typeof extra.initiatorScriptUrl === 'string' ? extra.initiatorScriptUrl : undefined,
+  })
+}
+
+/**
+ * Resolve initiator once per request (consumes tip); reuse on later upserts.
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {string=} pageUrl
+ */
+function resolveInitiatorForRequest(req, urlObj, pageUrl) {
+  let tipId = ''
+  try {
+    tipId = req.headers.get(networkInitiator.INITIATOR_HEADER) || ''
+  } catch {
+    tipId = ''
+  }
+  let referrer = ''
+  try {
+    referrer = typeof req.referrer === 'string' ? req.referrer : ''
+    if (referrer && referrer !== 'about:client') {
+      referrer = urlx.decUrlStrAbs(referrer) || referrer
+    }
+  } catch {
+    referrer = ''
+  }
+  return networkInitiator.resolveInitiator({
+    tipId,
+    url: urlObj.href,
+    referrer,
+    pageUrl: pageUrl || '',
+    destination: req.destination || '',
+  })
+}
+
+
+/**
+ * @param {FetchEvent} e
+ * @param {URL} urlObj
+ */
 async function proxy(e, urlObj) {
-  // 使用 e.resultingClientId 有问题
   const id = e.clientId
+  const devtoolsCtx = netCache.resolveContext(id || '')
+  if (e.resultingClientId && devtoolsCtx) {
+    netCache.bindClientDevtools(e.resultingClientId, devtoolsCtx.devtoolsId)
+  }
   let cliUrlStr
   if (id) {
     cliUrlStr = mIdUrlMap.get(id) || await getUrlByClientId(id)
@@ -3979,7 +5144,7 @@ async function proxy(e, urlObj) {
   const cliUrlObj = new URL(cliUrlStr)
 
   try {
-    return await forward(e.request, urlObj, cliUrlObj, 0)
+    return await forward(e.request, urlObj, cliUrlObj, 0, id)
   } catch (err) {
     console.error(err)
     return makeHtmlRes('前端脚本错误<br><pre>' + err.stack + '</pre>', 500)
@@ -3989,19 +5154,318 @@ async function proxy(e, urlObj) {
 /** @type {Database} */
 let mDB
 
-async function initDB() {
-  mDB = new Database('.sys')
-  await mDB.open({
-    'url-cache': {
-      keyPath: 'url'
+/** @type {Promise<void>|null} */
+let mDBInit = null
+
+/**
+ * Serialize IDB open across concurrent fetch events.
+ * Assigning mDB before await open() used to let later fetches skip init while
+ * network/cookie still had no DB → TypeError: Cannot read properties of undefined (reading 'get').
+ */
+function initDB() {
+  if (mDBInit) {
+    return mDBInit
+  }
+  mDBInit = (async () => {
+    const db = new Database('.sys')
+    await db.open({
+      'url-cache': {
+        keyPath: 'url'
+      },
+      'cookie': {
+        keyPath: 'id'
+      },
+      'web-storage': {
+        keyPath: 'id'
+      }
+    })
+
+    mDB = db
+    await network.setDB(mDB)
+    await cookie.setDB(mDB)
+    await sessionStorage.setDB(mDB)
+  })().catch(err => {
+    mDBInit = null
+    throw err
+  })
+  return mDBInit
+}
+
+
+/** @param {string} host */
+function isPassthroughHost(host) {
+  return urlx.isTurnstileHost(host)
+}
+
+
+/**
+ * Direct vendor CAPTCHA assets (Turnstile + reCAPTCHA) — skip proxy rewrite.
+ * @param {string} targetUrlStr
+ */
+function isCaptchaPassthroughTarget(targetUrlStr) {
+  return urlx.isTurnstileAbsoluteUrl(targetUrlStr) || urlx.isRecaptchaUrl(targetUrlStr)
+}
+
+
+/**
+ * Direct fetch for CAPTCHA scripts/iframes (skip Worker proxy rewrite).
+ * @param {Request} req
+ * @param {string} targetUrlStr
+ */
+function shouldPassthroughCaptcha(req, targetUrlStr) {
+  if (!isCaptchaPassthroughTarget(targetUrlStr)) {
+    return false
+  }
+  if (req.destination === 'script') {
+    return true
+  }
+  if (
+    req.mode === 'navigate' &&
+    (req.destination === 'iframe' || req.destination === '')
+  ) {
+    return true
+  }
+  // reCAPTCHA also uses fetch/XHR to google.com/recaptcha/*
+  if (urlx.isRecaptchaUrl(targetUrlStr)) {
+    return true
+  }
+  return false
+}
+
+
+/** @param {Request} req */
+function turnstilePreflightResponse(req) {
+  const allowHeaders = req.headers.get('Access-Control-Request-Headers') || '*'
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS',
+      'access-control-allow-headers': allowHeaders,
+      'access-control-max-age': '86400',
     },
-    'cookie': {
-      keyPath: 'id'
+  })
+}
+
+
+/** @param {(k: string, v: string) => void} setHeader */
+function applyTurnstileCorsHeaders(setHeader) {
+  setHeader('access-control-allow-origin', '*')
+  setHeader('access-control-expose-headers', '*')
+}
+
+
+/**
+ * Passthrough fetch: keep browser headers, skip proxy rewrite and processJs inject.
+ * @param {Request} req
+ * @param {string} urlStr
+ * @param {string} targetUrlStr
+ */
+function passthroughFetchRaw(req, urlStr, targetUrlStr) {
+  const cacheMode = fetchCtx.getFetchContext().disableCache
+    ? 'no-store'
+    : req.cache
+  /** Strip internal initiator correlation header before upstream. */
+  const headers = new Headers(req.headers)
+  headers.delete(networkInitiator.INITIATOR_HEADER)
+  if (urlStr === targetUrlStr) {
+    if (cacheMode === req.cache && !req.headers.has(networkInitiator.INITIATOR_HEADER)) {
+      return fetch(req)
     }
+    return fetch(new Request(req, { cache: cacheMode, headers }))
+  }
+  /** @type {RequestInit} */
+  const init = {
+    method: req.method,
+    headers,
+    credentials: req.credentials,
+    cache: cacheMode,
+    redirect: req.redirect,
+    referrer: req.referrer,
+    referrerPolicy: req.referrerPolicy,
+    integrity: req.integrity,
+    keepalive: req.keepalive,
+    signal: req.signal,
+  }
+  if (req.mode !== 'navigate') {
+    init.mode = req.mode
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    init.body = req.body
+  }
+  return fetch(targetUrlStr, init)
+}
+
+
+/**
+ * @param {Request} req
+ * @param {string} urlStr
+ * @param {string} targetUrlStr
+ * @param {string=} clientId
+ */
+async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
+  const urlObj = urlx.newUrl(targetUrlStr) || new URL(targetUrlStr)
+  const devtoolsCtx = netCache.resolveContext(clientId || '')
+  const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
+  const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
+  const cacheUrl = netCache.normalizeHotUrl(urlObj.href)
+  const startMs = Date.now()
+  const entryId = networkLog.makeId()
+  let pageUrl = ''
+  if (clientId) {
+    try {
+      const cli = mIdUrlMap.get(clientId) || await getUrlByClientId(clientId)
+      if (cli) {
+        pageUrl = urlx.decUrlStrAbs(cli) || cli
+      }
+    } catch {
+      pageUrl = ''
+    }
+  }
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, pageUrl)
+  /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
+  const timingMarks = {}
+
+  /**
+   * @param {{ finishedAt?: number }} [extra]
+   */
+  const currentTiming = (extra) => networkLog.buildTiming(startMs, {
+    ...timingMarks,
+    ...(extra || {}),
   })
 
-  await network.setDB(mDB)
-  await cookie.setDB(mDB)
+  fetchCtx.setFetchContext({ disableCache })
+  try {
+    networkLog.record(req, urlObj, null, startMs, {
+      pending: true,
+      bypass: true,
+      id: entryId,
+      devtoolsId,
+      timing: currentTiming(),
+      ...initiatorMeta,
+    })
+
+    if (!disableCache && req.method === 'GET') {
+      const hot = await netCache.getHot(req.method, cacheUrl)
+      if (hot) {
+        const now = Date.now()
+        timingMarks.startedAt = now
+        timingMarks.responseAt = now
+        const buf = await hot.arrayBuffer()
+        const chunks = [new Uint8Array(buf)]
+        const resOpt = {
+          status: hot.status,
+          headers: hot.headers,
+        }
+        await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
+          fromCache: true,
+          bypass: true,
+          source: 'cache',
+          hotKeyUrl: cacheUrl,
+          timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
+        })
+        return netCache.responseFromChunks(resOpt, chunks)
+      }
+    }
+
+    timingMarks.startedAt = Date.now()
+    let res
+    try {
+      res = await passthroughFetchRaw(req, urlStr, targetUrlStr)
+    } catch (err) {
+      const isAbort = err && (err.name === 'AbortError' || err.code === 20)
+      networkLog.record(req, urlObj, null, startMs, {
+        failed: true,
+        bypass: true,
+        id: entryId,
+        devtoolsId,
+        source: 'bypass',
+        errorCode: isAbort
+          ? 'ERR_ABORTED'
+          : 'ERR_' + ((err && err.name) || 'FETCH_FAILED'),
+        errorText: isAbort
+          ? '(canceled)'
+          : String((err && err.message) || err || 'fetch failed').slice(0, 200),
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+      })
+      throw err
+    }
+    timingMarks.responseAt = Date.now()
+
+    /**
+     * @param {{ size?: number }} [extra]
+     */
+    const finishEntry = (extra) => {
+      networkLog.record(req, urlObj, res, startMs, {
+        bypass: true,
+        id: entryId,
+        devtoolsId,
+        source: 'bypass',
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+        ...(extra || {}),
+      })
+    }
+
+    const resOpt = {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    }
+
+    if (!res.body) {
+      await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, [], {
+        bypass: true,
+        source: 'bypass',
+        hotKeyUrl: cacheUrl,
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+      })
+      return res
+    }
+
+    finishEntry()
+    const body = netCache.tapBodyCapture(res.body, (size, chunks) => {
+      void storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
+        bypass: true,
+        source: 'bypass',
+        hotKeyUrl: cacheUrl,
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
+      })
+    })
+    return new Response(body, resOpt)
+  } finally {
+    fetchCtx.resetFetchContext()
+  }
+}
+
+
+/**
+ * Fetch Turnstile api.js directly, patch location -> __location for fakeloc.
+ * @param {Request} req
+ * @param {string} urlStr
+ * @param {string} targetUrlStr
+ */
+async function passthroughTurnstileScript(req, urlStr, targetUrlStr, clientId) {
+  const res = await passthroughFetch(req, urlStr, targetUrlStr, clientId)
+  if (res.status !== 200) {
+    return res
+  }
+  const buf = await res.arrayBuffer()
+  const ct = res.headers.get('content-type') || ''
+  const charsetMatch = ct.match(/charset=['"]?([^'";]+)/i)
+  const charset = charsetMatch ? charsetMatch[1] : undefined
+  const patched = jsfilter.parseBin(new Uint8Array(buf), charset) || new Uint8Array(buf)
+  const headers = new Headers(res.headers)
+  headers.set('content-type', 'text/javascript; charset=utf-8')
+  return new Response(patched, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  })
 }
 
 
@@ -4012,37 +5476,54 @@ async function onFetch(e) {
   if (!mConf) {
     await initConf()
   }
-  // TODO: 逻辑优化
-  if (!mDB) {
-    await initDB()
-  }
+  await initDB()
   const req = e.request
   const urlStr = urlx.delHash(req.url)
+  let reqUrl
+  try {
+    reqUrl = new URL(urlStr)
+  } catch {
+    return makeHtmlRes('invalid url: ' + urlStr, 500)
+  }
+  const origin = reqUrl.origin
+  const pathname = reqUrl.pathname
 
-  // 首页（例如 https://zjcqoo.github.io/）
-  if (urlStr === path.ROOT || urlStr === path.HOME) {
+  if (
+    pathname === '/' ||
+    pathname === '/index.html' ||
+    pathname === '/viewer' ||
+    pathname === '/viewer.html'
+  ) {
     let indexPath = mConf.assets_cdn + mConf.index_path
     if (!mConf.index_path) {
-      // 临时代码。防止配置文件未更新的情况下首页无法加载
       indexPath = mConf.assets_cdn + 'index_v3.html'
     }
     const res = await fetch(indexPath)
     return makeHtmlRes(res.body)
   }
 
-  // 图标、配置（例如 https://zjcqoo.github.io/conf.js）
-  if (urlStr === path.CONF || urlStr === path.ICON) {
-    return fetch(urlStr)
+  if (
+    pathname === '/conf.js' ||
+    pathname === '/favicon.ico' ||
+    urlStr === origin + '/conf.js' ||
+    urlStr === origin + '/favicon.ico'
+  ) {
+    return fetch(origin + pathname)
   }
 
-  // 注入页面的脚本（例如 https://zjcqoo.github.io/__sys__/helper.js）
-  if (urlStr === path.HELPER) {
+  if (pathname.startsWith('/vendor/')) {
+    return fetch(mConf.assets_cdn + pathname.slice(1))
+  }
+
+  if (urlStr === path.HELPER ||
+      urlStr.endsWith('__sys__/helper.js')) {
     return fetch(self['__FILE__'])
   }
 
-  // 静态资源（例如 https://zjcqoo.github.io/__sys__/assets/ico/google.png）
-  if (urlStr.startsWith(path.ASSETS)) {
-    const filePath = urlStr.substr(path.ASSETS.length)
+  const assetsSuffix = '__sys__/assets/'
+  const assetsIdx = pathname.indexOf(assetsSuffix)
+  if (assetsIdx !== -1) {
+    const filePath = pathname.substr(assetsIdx + assetsSuffix.length)
     return fetch(mConf.assets_cdn + filePath)
   }
 
@@ -4053,8 +5534,31 @@ async function onFetch(e) {
     }
   }
 
+  const isProxyPath = pathname.includes('/-----')
+  if (!isProxyPath) {
+    return makeHtmlRes('invalid url: ' + urlStr, 500)
+  }
+
   let targetUrlStr = urlx.decUrlStrAbs(urlStr)
-  
+
+  const passthroughObj = urlx.newUrl(targetUrlStr)
+  if (passthroughObj && isCaptchaPassthroughTarget(targetUrlStr)) {
+    if (req.method === 'OPTIONS') {
+      return turnstilePreflightResponse(req)
+    }
+    if (req.destination === 'script' && urlx.isTurnstileApiJsUrl(urlStr)) {
+      return passthroughTurnstileScript(req, urlStr, targetUrlStr, e.clientId)
+    }
+    if (shouldPassthroughCaptcha(req, targetUrlStr)) {
+      return passthroughFetch(req, urlStr, targetUrlStr, e.clientId)
+    }
+  } else if (passthroughObj && isPassthroughHost(passthroughObj.hostname)) {
+    // Turnstile non-asset requests: still allow CORS preflight helper path below via forward()
+    if (req.method === 'OPTIONS') {
+      return turnstilePreflightResponse(req)
+    }
+  }
+
   const handler = mUrlHandler[targetUrlStr]
   if (handler) {
     const {
@@ -4064,7 +5568,8 @@ async function onFetch(e) {
     } = handler
 
     if (redir) {
-      return Response.redirect('/-----' + redir)
+      const redirPrefix = urlx.getProxyPrefix(origin)
+      return Response.redirect(redirPrefix + redir)
     }
     if (content) {
       return makeHtmlRes(content)
@@ -4185,32 +5690,161 @@ global.addEventListener('fetch', e => {
 
 
 global.addEventListener('message', e => {
-  // console.log('sw msg:', e.data)
   const [cmd, val] = e.data
   const src = e.source
 
   switch (cmd) {
   case MSG.PAGE_COOKIE_PUSH:
     cookie.set(val)
-    // @ts-ignore
     sendMsgToPages(MSG.SW_COOKIE_PUSH, [val], src.id)
     break
 
   case MSG.PAGE_INFO_PULL:
-    // console.log('SW MSG.COOKIE_PULL:', src.id)
     sendMsg(src, MSG.SW_INFO_PUSH, {
       cookies: cookie.getNonHttpOnlyItems(),
       conf: mConf,
     })
     break
 
+  case MSG.PAGE_STORAGE_GET:
+    break
+
+  case MSG.PAGE_STORAGE_SET: {
+    const { siteOrigin, key, value, oldValue } = val
+    sessionStorage.setItem(siteOrigin, key, value).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, key, value, oldValue,
+      }, src.id)
+    })
+    break
+  }
+
+  case MSG.PAGE_STORAGE_REMOVE: {
+    const { siteOrigin, key, oldValue } = val
+    sessionStorage.removeItem(siteOrigin, key).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, key, value: null, oldValue,
+      }, src.id)
+    })
+    break
+  }
+
+  case MSG.PAGE_STORAGE_CLEAR: {
+    const { siteOrigin } = val
+    sessionStorage.clear(siteOrigin).then(() => {
+      sendMsgToPages(MSG.SW_STORAGE_PUSH, {
+        siteOrigin, clear: true,
+      }, src.id)
+    })
+    break
+  }
+
+  case MSG.PAGE_CLEAR_STATE:
+    e.waitUntil(Promise.all([
+      cookie.clearAll(),
+      sessionStorage.clearAll(),
+      network.clearUrlCache(),
+      netCache.clearAllNetworkCaches(),
+    ]).then(() => {
+      sendMsgToPages(MSG.SW_CLEAR_STATE, {})
+      sendMsg(src, MSG.SW_CLEAR_STATE, { done: true, id: val && typeof val.id === 'string' ? val.id : '' })
+    }).catch((err) => {
+      console.warn('[jsproxy] clear state fail:', err)
+      sendMsg(src, MSG.SW_CLEAR_STATE, {
+        done: true,
+        ok: false,
+        id: val && typeof val.id === 'string' ? val.id : '',
+        error: String(err),
+      })
+    }))
+    break
+
+  case MSG.PAGE_COOKIE_LIST: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const items = cookie.getAllItems().map((item) => cookie.toPublicCookie(item))
+    sendMsg(src, MSG.SW_COOKIE_LIST_REPLY, { id: rpcId, ok: true, value: { cookies: items } })
+    break
+  }
+
+  case MSG.PAGE_COOKIE_DELETE: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const cookieId = val && typeof val.cookieId === 'string' ? val.cookieId : ''
+    const deleted = cookieId ? cookie.deleteById(cookieId) : false
+    e.waitUntil(
+      cookie.flush().then(() => {
+        sendMsg(src, MSG.SW_COOKIE_DELETE_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { deleted },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_DELETE_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'COOKIE_DELETE_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_COOKIE_CLEAR: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const domain = val && typeof val.domain === 'string' ? val.domain.trim() : ''
+    if (!domain) {
+      sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'domain required', code: 'DOMAIN_REQUIRED' },
+      })
+      break
+    }
+    e.waitUntil(
+      cookie.clearByDomain(domain).then((n) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { cleared: n },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: {
+            message: String(err && err.message ? err.message : err),
+            code: (err && err.code) || 'COOKIE_CLEAR_FAILED',
+          },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_COOKIE_CLEAR_ALL: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    e.waitUntil(
+      cookie.clearAll().then(() => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { cleared: -1 },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'COOKIE_CLEAR_ALL_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
   case MSG.PAGE_INIT_BEG:
-    // console.log('SW MSG.PAGE_INIT_BEG:', val)
     pageNotify(val, false)
     break
 
   case MSG.PAGE_INIT_END:
-    // console.log('SW MSG.PAGE_INIT_END:', val)
     pageNotify(val, true)
     break
 
@@ -4230,13 +5864,310 @@ global.addEventListener('message', e => {
     break
 
   case MSG.PAGE_RELOAD_CONF:
-    /*await*/ loadConf()
+    loadConf()
     break
 
   case MSG.PAGE_READY_CHECK:
     sendMsg(src, MSG.SW_READY)
-    /*await*/ loadConf()
+    loadConf()
     break
+
+  case MSG.PAGE_BUILD_GET:
+    sendMsg(src, MSG.SW_BUILD_REPLY, {
+      reqId: val && typeof val.reqId === 'string' ? val.reqId : '',
+      vc_build: (typeof self.VC_BUILD === 'string' && self.VC_BUILD)
+        || (mConf && mConf.vc_build)
+        || '',
+      vc_version: (typeof self.VC_VERSION === 'string' && self.VC_VERSION)
+        || (mConf && mConf.vc_version)
+        || '',
+    })
+    break
+
+  case MSG.PAGE_NETWORK_OPTS: {
+  const devtoolsId = val && typeof val.devtoolsId === 'string' ? val.devtoolsId : ''
+  if (devtoolsId && src && src.id) {
+    netCache.registerClientOpts(src.id, {
+      devtoolsId,
+      disableCache: !!(val && val.disableCache),
+    })
+  }
+  break
+  }
+
+  case MSG.PAGE_NETWORK_INITIATOR_TIP: {
+  networkInitiator.registerTip(val)
+  break
+  }
+
+  case MSG.PAGE_NETWORK_BODY_READ: {
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  if (!entryId || !rpcId) {
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'entryId and id required', code: 'NETWORK_BODY_BAD_REQUEST' },
+    })
+    break
+  }
+  netCache.getArchive(entryId).then(async (res) => {
+    if (!res) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'body not found', code: 'NETWORK_BODY_NOT_FOUND' },
+      })
+      return
+    }
+    const prefix = await netCache.readBodyDisplayPrefix(res)
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: {
+        headers: prefix.headers,
+        body: prefix.text,
+        encoding: 'text',
+        truncated: prefix.truncated,
+        status: prefix.status,
+        bytesRead: prefix.bytesRead,
+      },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'NETWORK_BODY_READ_FAILED' },
+    })
+  })
+  break
+  }
+
+  case MSG.PAGE_NETWORK_BODY_READ_LINES: {
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  const metaOnly = !!(val && val.metaOnly)
+  const fromLine = val && typeof val.fromLine === 'number' ? val.fromLine : undefined
+  const toLine = val && typeof val.toLine === 'number' ? val.toLine : undefined
+
+  if (!entryId || !rpcId) {
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'entryId and id required', code: 'NETWORK_BODY_BAD_REQUEST' },
+    })
+    break
+  }
+
+  if (!metaOnly) {
+    const fl = typeof fromLine === 'number' ? Math.floor(fromLine) : 0
+    if (fl < 0) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'fromLine must be >= 0', code: 'NETWORK_BODY_BAD_RANGE' },
+      })
+      break
+    }
+    if (typeof toLine === 'number' && fl >= Math.floor(toLine)) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'fromLine must be < toLine', code: 'NETWORK_BODY_BAD_RANGE' },
+      })
+      break
+    }
+  }
+
+  netCache.getArchive(entryId).then(async (res) => {
+    if (!res) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'body not found', code: 'NETWORK_BODY_NOT_FOUND' },
+      })
+      return
+    }
+    if (!(await netCache.isTextLikeResponse(res))) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: {
+          message: 'body is not text-like; use VC_NETWORK_BODY_READ',
+          code: 'NETWORK_BODY_NOT_TEXT',
+        },
+      })
+      return
+    }
+    const index = await netCache.getOrBuildTextLineIndex(entryId, res)
+    const range = netCache.readTextLineRange(
+      index,
+      typeof fromLine === 'number' ? fromLine : 0,
+      typeof toLine === 'number' ? toLine : undefined,
+      metaOnly,
+    )
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: {
+        headers: index.headers,
+        status: index.status,
+        totalLines: index.totalLines,
+        fromLine: range.fromLine,
+        toLine: range.toLine,
+        lines: range.lines,
+        contentType: index.contentType,
+        charset: index.charset,
+        rangeClamped: range.rangeClamped || undefined,
+      },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'NETWORK_BODY_READ_FAILED' },
+    })
+  })
+  break
+  }
+
+  case MSG.PAGE_NETWORK_ARCHIVE_DROP: {
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  if (entryId) {
+    netCache.dropArchive(entryId)
+  }
+  break
+  }
+
+  case MSG.PAGE_NETWORK_HOT_PROBE: {
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  const method = val && typeof val.method === 'string' ? val.method : 'GET'
+  const url = val && typeof val.url === 'string' ? val.url : ''
+  if (!rpcId || !url) {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'id and url required', code: 'HOT_PROBE_BAD_REQUEST' },
+    })
+    break
+  }
+  netCache.probeHot(method, url).then((result) => {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: {
+        exists: !!result.exists,
+        fresh: !!result.fresh,
+        expiresAt: result.expiresAt,
+      },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'HOT_PROBE_FAILED' },
+    })
+  })
+  break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_STATS: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    e.waitUntil(
+      netCache.getNetworkCacheStats().then((stats) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_STATS_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: stats,
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_STATS_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_STATS_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_LIST: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const layer = val && val.layer === 'archive' ? 'archive' : 'hot'
+    const limit = val && typeof val.limit === 'number' ? val.limit : 200
+    e.waitUntil(
+      netCache.listNetworkCache(layer, limit).then((entries) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_LIST_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer, entries },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_LIST_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_LIST_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_CLEAR: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const origin = val && typeof val.origin === 'string' ? val.origin.trim() : ''
+    if (!origin) {
+      sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'origin required', code: 'ORIGIN_REQUIRED' },
+      })
+      break
+    }
+    e.waitUntil(
+      netCache.clearHotByOrigin(origin).then(() => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer: 'hot', origin },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: {
+            message: String(err && err.message ? err.message : err),
+            code: (err && err.code) || 'CACHE_CLEAR_FAILED',
+          },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_CLEAR_ALL: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const layer =
+      val && (val.layer === 'hot' || val.layer === 'archive' || val.layer === 'all')
+        ? val.layer
+        : 'all'
+    e.waitUntil(
+      netCache.clearNetworkCacheLayer(layer).then(() => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_CLEAR_ALL_FAILED' },
+        })
+      }),
+    )
+    break
+  }
   }
 })
 
@@ -4251,7 +6182,10 @@ global.addEventListener('activate', e => {
   console.log('onactivate:', e)
   sendMsgToPages(MSG.SW_READY, 1)
 
-  e.waitUntil(clients.claim())
+  e.waitUntil(Promise.all([
+    clients.claim(),
+    netCache.rebuildHotIndex(),
+  ]))
 })
 
 

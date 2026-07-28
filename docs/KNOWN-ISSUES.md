@@ -87,6 +87,21 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 实现：`public/inject.js`（真鼠标 capture）、[`public/jsproxy-src/page.js`](../public/jsproxy-src/page.js)（程序化 click / open / submit、History API 上报）、[`public/jsproxy-src/fakeloc.js`](../public/jsproxy-src/fakeloc.js)（location 写入拦截）。
 
+### 无限开 Tab 排查（build `20260728-v19`+）
+
+**现象**：打开某站（如 bilibili）后，父应用不断新建「同一 URL」的 App 标签；或加载完成后又弹出更多标签。
+
+**常见原因**：父侧对每个 `VC_LOCATION`（尤其 `method: 'open'`）或带 `target: '_blank'` 的 `VC_CLICK` **无条件** `createTab` + `VC_NAVIGATE`；站点脚本在 onload 时再次 `window.open` / 改 `location`，形成正反馈。
+
+**排查**：
+
+1. viewer 右下角「调」→ **导航** → 勾选 **导航探针**（或父发 `VC_DEBUG_OPTIONS { navProbe: true }`）
+2. 再导航到问题站点：父侧不再收到 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`，连环开 Tab 应停止
+3. 「导航」列表查看被拦截的意图与 `stack`，定位站点脚本触发点
+4. 父侧改为：同 URL / `method:'open'` 去重；仅用户明确「新标签打开」时才 `createTab`
+
+探针模式下另发只读 `VC_DEBUG_NAV`（含 stack）；**不得**据此开 Tab。
+
 ---
 
 ## SPA 页内路由（build `20260727-v16`+）

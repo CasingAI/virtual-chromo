@@ -1,6 +1,8 @@
 /**
  * virtual-chromo passive navigation — report page intents to bridge (no navigation).
  */
+import {captureStack} from './vc-stack.js'
+
 const CHANNEL = '_VC_INJECT'
 
 const BRIDGE_HANDLERS = {
@@ -36,15 +38,49 @@ function findBridgeWindow(kind) {
 }
 
 /**
+ * @param {Window | null} bridge
+ * @returns {boolean}
+ */
+function isNavProbe(bridge) {
+  try {
+    if (bridge && bridge.__vcDebugOpts && bridge.__vcDebugOpts.navProbe === true) {
+      return true
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    let w = typeof window !== 'undefined' ? window : null
+    while (w) {
+      if (w.__vcDebugOpts && w.__vcDebugOpts.navProbe === true) {
+        return true
+      }
+      if (w === w.top) {
+        break
+      }
+      w = w.parent
+    }
+  } catch {
+    // ignore
+  }
+  return false
+}
+
+/**
  * @param {string} kind
  * @param {Record<string, unknown>} payload
  */
 function forward(kind, payload) {
   const handlerName = BRIDGE_HANDLERS[kind]
   const bridge = findBridgeWindow(kind)
+  /** @type {Record<string, unknown>} */
+  let out = payload
+  if (isNavProbe(bridge)) {
+    out = Object.assign({}, payload, { stack: captureStack() })
+  }
   if (bridge && handlerName) {
     try {
-      bridge[handlerName](payload)
+      bridge[handlerName](out)
       return
     } catch {
       // fall through
@@ -62,7 +98,7 @@ function forward(kind, payload) {
           : null
   if (typeof reportFn === 'function') {
     try {
-      reportFn(payload)
+      reportFn(out)
       return
     } catch {
       // fall through
@@ -70,7 +106,7 @@ function forward(kind, payload) {
   }
 
   try {
-    win.parent.postMessage([CHANNEL, kind, payload], '*')
+    win.parent.postMessage([CHANNEL, kind, out], '*')
   } catch {
     // ignore
   }

@@ -255,6 +255,22 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 
 > Application 存储管理 API（build `20260728-v17`+）：见上文 `VC_COOKIE_*` / `VC_STORAGE_*` / `VC_IDB_*` / `VC_SITE_CACHE_*` / `VC_NETWORK_CACHE_*` / `VC_SW_INFO`。全局清除仍可用 `VC_CLEAR_STATE`。
 
+### `VC_DEBUG_OPTIONS`
+
+导航探针（build `20260728-v19`+）。开启后**抑制**向父窗口上报 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`，改为采集调用栈并在 viewer 调试面板「导航」tab 展示；同时发出只读观测事件 `VC_DEBUG_NAV`。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_DEBUG_OPTIONS', {
+  navProbe: true,
+}], '*')
+```
+
+- `navProbe: true`：切断父侧自动开 Tab / 自动 `VC_NAVIGATE` 的反馈环；用于排查站点脚本在加载时调用 `window.open` / 改 `location` 等
+- `navProbe: false`：恢复正常 `VC_*` 上报
+- 也可在 viewer 右下角「调」→「导航」checkbox 本地开关（与本命令同源状态）
+
+**父应用不得根据 `VC_DEBUG_NAV` 执行 `createTab` / `VC_NAVIGATE`。**
+
 ### `VC_NETWORK_BODY_READ`
 
 按 network entry UUID 读取**不可变**响应快照（archive 层，与 URL 无关）。
@@ -416,6 +432,24 @@ Service Worker 注册完成，bridge 可接收导航命令。
 | `VC_LOCATION` | 子页想**整页**换地址；再决定是否 `VC_NAVIGATE` |
 
 典型 SPA 点击 `<Link href="/about">`：`VC_CLICK` → 子页 `pushState` → `VC_HISTORY`（父级只同步 URL，不 reload）。
+
+### `VC_DEBUG_NAV`
+
+仅在 `navProbe: true`（`VC_DEBUG_OPTIONS` 或 viewer「导航探针」）时发出。payload 与被抑制的导航意图对应，并附带过滤后的 `stack: string[]`。
+
+```javascript
+// ['VC_DEBUG_NAV', {
+//   kind: 'LOCATION' | 'CLICK' | 'HISTORY',
+//   ts: 1730000000000,
+//   method: 'open',
+//   url: 'https://www.bilibili.com/',
+//   target: '_blank',
+//   tagName: 'A',
+//   stack: ['at ...', '...'],
+// }]
+```
+
+用于 DevTools / 调试面板展示触发来源；**禁止**据此开 App 标签或整页导航。
 
 ### `VC_LOADING`
 

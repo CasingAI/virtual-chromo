@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v18'
+  const BUILD = '20260728-v19'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -58,6 +58,7 @@
     const MAX_LOGS = 500
     const MAX_MESSAGES = 300
     const MAX_NETWORK = 500
+    const MAX_NAV = 300
 
     /** @type {{ level: string, args: string[], at: number }[]} */
     const logs = []
@@ -68,8 +69,17 @@
     /** @type {{ id: string, method: string, url: string, status: number, type: string, size: number, duration: number, failed: boolean, bypass: boolean, ts: number }[]} */
     const networkEntries = []
 
+    /** @type {{ kind: string, method?: string, url?: string, href?: string, target?: string, tagName?: string, stack?: string[], ts: number, at: number }[]} */
+    const navEntries = []
+
     /** @type {(() => Record<string, unknown>) | null} */
     let stateProvider = null
+
+    /** @type {((enabled: boolean) => void) | null} */
+    let navProbeSetter = null
+
+    /** @type {(() => boolean) | null} */
+    let navProbeGetter = null
 
     /** @type {boolean} */
     let panelOpen = false
@@ -105,6 +115,15 @@
 
     /** @type {HTMLElement | null} */
     let networkList = null
+
+    /** @type {HTMLElement | null} */
+    let navPane = null
+
+    /** @type {HTMLInputElement | null} */
+    let navProbeCheck = null
+
+    /** @type {HTMLElement | null} */
+    let navList = null
 
     /**
      * @param {unknown} value
@@ -320,6 +339,95 @@
       networkList.scrollTop = networkList.scrollHeight
     }
 
+    /**
+     * @param {{ kind: string, method?: string, url?: string, href?: string, target?: string, tagName?: string, stack?: string[], ts?: number }} entry
+     */
+    function addNav(entry) {
+      const at = typeof entry.ts === 'number' ? entry.ts : Date.now()
+      navEntries.push({
+        kind: entry.kind || '?',
+        method: entry.method,
+        url: entry.url,
+        href: entry.href,
+        target: entry.target,
+        tagName: entry.tagName,
+        stack: Array.isArray(entry.stack) ? entry.stack.slice() : [],
+        ts: at,
+        at: at,
+      })
+      if (navEntries.length > MAX_NAV) {
+        navEntries.shift()
+      }
+      if (panelOpen && activeTab === 'nav') {
+        renderNav()
+      }
+      updateBadge()
+    }
+
+    function syncNavProbeCheck() {
+      if (!navProbeCheck) {
+        return
+      }
+      const on = navProbeGetter ? !!navProbeGetter() : false
+      navProbeCheck.checked = on
+    }
+
+    function renderNav() {
+      if (!navList) {
+        return
+      }
+      syncNavProbeCheck()
+      navList.innerHTML = ''
+      const frag = document.createDocumentFragment()
+      for (let i = navEntries.length - 1; i >= 0; i--) {
+        const item = navEntries[i]
+        const row = document.createElement('div')
+        row.className = 'vcd-nav'
+        const head = document.createElement('div')
+        head.className = 'vcd-nav__head'
+        const dest = item.url || item.href || ''
+        head.textContent =
+          '[' +
+          formatTime(item.at) +
+          '] ' +
+          item.kind +
+          (item.method ? ' · ' + item.method : '') +
+          (item.tagName ? ' · ' + item.tagName : '') +
+          (item.target ? ' target=' + item.target : '')
+        row.appendChild(head)
+        if (dest) {
+          const urlEl = document.createElement('div')
+          urlEl.className = 'vcd-nav__url'
+          urlEl.textContent = dest
+          row.appendChild(urlEl)
+        }
+        if (item.stack && item.stack.length) {
+          const details = document.createElement('details')
+          details.className = 'vcd-nav__stack'
+          const summary = document.createElement('summary')
+          summary.textContent = 'stack (' + item.stack.length + ')'
+          details.appendChild(summary)
+          const pre = document.createElement('pre')
+          pre.textContent = item.stack.join('\n')
+          details.appendChild(pre)
+          row.appendChild(details)
+        } else {
+          const emptyStack = document.createElement('div')
+          emptyStack.className = 'vcd-nav__nostack'
+          emptyStack.textContent = '(无 stack)'
+          row.appendChild(emptyStack)
+        }
+        frag.appendChild(row)
+      }
+      if (!navEntries.length) {
+        const empty = document.createElement('div')
+        empty.className = 'vcd-empty'
+        empty.textContent = '开启导航探针后，被拦截的 VC_CLICK / LOCATION / HISTORY 会显示在此'
+        frag.appendChild(empty)
+      }
+      navList.appendChild(frag)
+    }
+
     function renderState() {
       if (!stateView) {
         return
@@ -338,6 +446,7 @@
         ['allowed origins', data.allowedOrigins || '(all)'],
         ['can go back', data.canGoBack ? 'yes' : 'no'],
         ['can go forward', data.canGoForward ? 'yes' : 'no'],
+        ['navProbe', data.navProbe ? 'on' : 'off'],
       ]
 
       let html = '<div class="vcd-state-grid">'
@@ -396,7 +505,9 @@
       if (!badge) {
         return
       }
-      const count = logs.filter((l) => l.level === 'error' || l.level === 'warn').length
+      const warnCount = logs.filter((l) => l.level === 'error' || l.level === 'warn').length
+      const probeOn = navProbeGetter ? !!navProbeGetter() : false
+      const count = warnCount + (probeOn ? navEntries.length : 0)
       badge.textContent = count > 0 ? String(count) : ''
       badge.hidden = count === 0
     }
@@ -423,6 +534,8 @@
         renderState()
       } else if (tab === 'network') {
         renderNetwork()
+      } else if (tab === 'nav') {
+        renderNav()
       }
     }
 
@@ -501,12 +614,20 @@
         '<button type="button" class="vcd-tab is-active" data-tab="log">日志</button>' +
         '<button type="button" class="vcd-tab" data-tab="msg">通讯</button>' +
         '<button type="button" class="vcd-tab" data-tab="network">网络</button>' +
+        '<button type="button" class="vcd-tab" data-tab="nav">导航</button>' +
         '<button type="button" class="vcd-tab" data-tab="state">状态</button>' +
         '</div>' +
         '<div class="vcd-body">' +
         '<div class="vcd-pane" data-pane="log"></div>' +
         '<div class="vcd-pane" data-pane="msg" hidden></div>' +
         '<div class="vcd-pane" data-pane="network" hidden></div>' +
+        '<div class="vcd-pane" data-pane="nav" hidden>' +
+        '<div class="vcd-nav-toolbar">' +
+        '<label class="vcd-nav-toggle"><input type="checkbox" class="vcd-nav-probe" /> 导航探针</label>' +
+        '<span class="vcd-nav-hint">开启后不上报 VC_CLICK/LOCATION/HISTORY，在此显示触发栈</span>' +
+        '</div>' +
+        '<div class="vcd-nav-list"></div>' +
+        '</div>' +
         '<div class="vcd-pane" data-pane="state" hidden></div>' +
         '</div></div>'
 
@@ -518,7 +639,7 @@
         '.vcd-switch:active{transform:scale(.96)}' +
         '.vcd-badge{position:absolute;top:-3px;right:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:#e03131;color:#fff;font-size:9px;line-height:14px;text-align:center}' +
         /* hidden must win over display:flex — this was why close did nothing */
-        '.vcd-panel{pointer-events:auto;position:absolute;right:0;bottom:44px;width:min(88vw,320px);height:min(52vh,380px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
+        '.vcd-panel{pointer-events:auto;position:absolute;right:0;bottom:44px;width:min(92vw,360px);height:min(56vh,420px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
         '.vcd-panel.vcd-panel--open,.vcd-panel:not([hidden]){display:flex}' +
         '.vcd-panel[hidden]{display:none!important}' +
         '.vcd-panel__head{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#25262b;border-bottom:1px solid #343a40}' +
@@ -530,7 +651,7 @@
         '.vcd-btn:hover{background:#495057}' +
         '.vcd-btn--close{width:24px;height:24px;padding:0;font-size:16px;line-height:24px;font-weight:500}' +
         '.vcd-tabs{display:flex;background:#1a1b1e;border-bottom:1px solid #343a40}' +
-        '.vcd-tab{flex:1;border:0;background:transparent;color:#868e96;padding:7px 4px;cursor:pointer;font:inherit}' +
+        '.vcd-tab{flex:1;border:0;background:transparent;color:#868e96;padding:7px 2px;cursor:pointer;font:inherit;font-size:10px}' +
         '.vcd-tab.is-active{color:#69db7c;box-shadow:inset 0 -2px 0 #2f9e44}' +
         '.vcd-body{flex:1;overflow:auto;background:#111214;min-height:0}' +
         '.vcd-pane{min-height:100%}' +
@@ -557,7 +678,17 @@
         '.vcd-net--fail .vcd-net__head{color:#ff6b6b}' +
         '.vcd-net--bypass{border-left:2px solid #f59f00}' +
         '.vcd-net__head{color:#69db7c;font-weight:600}' +
-        '.vcd-net__url{color:#adb5bd;word-break:break-all;margin-top:2px}'
+        '.vcd-net__url{color:#adb5bd;word-break:break-all;margin-top:2px}' +
+        '.vcd-nav-toolbar{padding:8px;border-bottom:1px solid #212529;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;background:#111214;z-index:1}' +
+        '.vcd-nav-toggle{display:flex;align-items:center;gap:6px;color:#e8e8e8;font-weight:600;cursor:pointer}' +
+        '.vcd-nav-hint{color:#868e96;font-size:10px;line-height:1.35}' +
+        '.vcd-nav{padding:6px 8px;border-bottom:1px solid #212529;border-left:2px solid #fcc419}' +
+        '.vcd-nav__head{color:#fcc419;font-weight:600;word-break:break-word}' +
+        '.vcd-nav__url{color:#74c0fc;word-break:break-all;margin-top:2px;font:10px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}' +
+        '.vcd-nav__nostack{color:#868e96;margin-top:2px;font-size:10px}' +
+        '.vcd-nav__stack{margin-top:4px;color:#adb5bd}' +
+        '.vcd-nav__stack summary{cursor:pointer;color:#ced4da}' +
+        '.vcd-nav__stack pre{margin:4px 0 0;padding:4px 6px;background:#1a1b1e;border-radius:4px;overflow:auto;max-height:140px;white-space:pre-wrap;word-break:break-all;font:10px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:#ced4da}'
 
       document.head.appendChild(style)
       document.body.appendChild(root)
@@ -566,6 +697,9 @@
       logList = root.querySelector('[data-pane="log"]')
       msgList = root.querySelector('[data-pane="msg"]')
       networkList = root.querySelector('[data-pane="network"]')
+      navPane = root.querySelector('[data-pane="nav"]')
+      navProbeCheck = root.querySelector('.vcd-nav-probe')
+      navList = root.querySelector('.vcd-nav-list')
       stateView = root.querySelector('[data-pane="state"]')
 
       const switchBtn = root.querySelector('.vcd-switch')
@@ -595,12 +729,24 @@
         } else if (activeTab === 'network') {
           networkEntries.length = 0
           renderNetwork()
+        } else if (activeTab === 'nav') {
+          navEntries.length = 0
+          renderNav()
         } else if (activeTab === 'state') {
           // state is live snapshot; clearing history is more useful
           renderState()
         }
         updateBadge()
       })
+
+      if (navProbeCheck) {
+        navProbeCheck.addEventListener('change', function () {
+          if (navProbeSetter) {
+            navProbeSetter(!!navProbeCheck.checked)
+          }
+          updateBadge()
+        })
+      }
 
       root.querySelectorAll('.vcd-tab').forEach((btn) => {
         btn.addEventListener('click', function (e) {
@@ -634,6 +780,27 @@
       stateProvider = fn
     }
 
+    /**
+     * @param {(enabled: boolean) => void} setter
+     * @param {() => boolean} getter
+     */
+    function setNavProbeHandlers(setter, getter) {
+      navProbeSetter = setter
+      navProbeGetter = getter
+      syncNavProbeCheck()
+    }
+
+    function syncNavProbeUi() {
+      syncNavProbeCheck()
+      updateBadge()
+      if (panelOpen && activeTab === 'nav') {
+        renderNav()
+      }
+      if (panelOpen && activeTab === 'state') {
+        renderState()
+      }
+    }
+
     return {
       init,
       log: function () {
@@ -650,7 +817,10 @@
       },
       message: addMessage,
       network: addNetwork,
+      nav: addNav,
       setStateProvider,
+      setNavProbeHandlers,
+      syncNavProbeUi,
     }
   })()
 
@@ -920,6 +1090,26 @@
   /** @type {boolean} */
   let networkDisableCache = false
 
+  /** @type {boolean} */
+  let navProbe = false
+
+  function syncDebugOpts() {
+    window.__vcDebugOpts = { navProbe: !!navProbe }
+  }
+
+  /**
+   * @param {boolean} enabled
+   * @param {{ silent?: boolean }} [opts]
+   */
+  function setNavProbe(enabled, opts) {
+    navProbe = !!enabled
+    syncDebugOpts()
+    DebugPanel.syncNavProbeUi()
+    if (!(opts && opts.silent)) {
+      vlog('info', ['navProbe:', navProbe ? 'on' : 'off'])
+    }
+  }
+
   /**
    * @param {string} level
    * @param {unknown[]} args
@@ -980,6 +1170,7 @@
       parentOrigin: window.parent === window ? '(top)' : '(embedded)',
       networkDisableCache: networkDisableCache,
       networkDevtoolsId: networkDevtoolsId || ensureNetworkDevtoolsId(),
+      navProbe: navProbe,
       history: navHistory.slice(),
     }
   }
@@ -1002,6 +1193,7 @@
     window.__vcOnInjectClick = ingestInjectClick
     window.__vcOnInjectLocation = ingestInjectLocation
     window.__vcOnInjectHistory = ingestInjectHistory
+    syncDebugOpts()
 
     window.addEventListener('message', onParentMessage)
     window.addEventListener('message', onInjectMessage)
@@ -1010,6 +1202,14 @@
     contentFrame.addEventListener('error', onContentError)
 
     DebugPanel.setStateProvider(getDebugState)
+    DebugPanel.setNavProbeHandlers(
+      function (enabled) {
+        setNavProbe(enabled)
+      },
+      function () {
+        return navProbe
+      },
+    )
     DebugPanel.init({ version: VERSION, build: BUILD })
     ensureNetworkDevtoolsId()
 
@@ -1426,6 +1626,9 @@
         break
       case 'VC_NETWORK_OPTIONS':
         applyNetworkOptions(payload)
+        break
+      case 'VC_DEBUG_OPTIONS':
+        applyDebugOptions(payload)
         break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
@@ -2569,7 +2772,7 @@
     if (!payload || typeof payload !== 'object') {
       return
     }
-    const data = /** @type {{ ts?: number, tagName?: string, href?: string, target?: string, text?: string, id?: string, className?: string }} */ (
+    const data = /** @type {{ ts?: number, tagName?: string, href?: string, target?: string, text?: string, id?: string, className?: string, stack?: string[] }} */ (
       payload
     )
     vlog('info', [
@@ -2577,6 +2780,17 @@
       data.tagName || '?',
       data.href || data.text || '',
     ])
+    if (navProbe) {
+      emitDebugNav('CLICK', {
+        ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+        tagName: typeof data.tagName === 'string' ? data.tagName : '',
+        href: typeof data.href === 'string' ? data.href : undefined,
+        target: typeof data.target === 'string' ? data.target : undefined,
+        text: typeof data.text === 'string' ? data.text : undefined,
+        stack: Array.isArray(data.stack) ? data.stack : [],
+      })
+      return
+    }
     postToParent('VC_CLICK', {
       ts: typeof data.ts === 'number' ? data.ts : Date.now(),
       tagName: typeof data.tagName === 'string' ? data.tagName : '',
@@ -2596,7 +2810,7 @@
       return
     }
     const data =
-      /** @type {{ ts?: number, method?: string, httpMethod?: string, url?: string, target?: string, formBody?: string, formEnctype?: string, formFiles?: boolean }} */ (
+      /** @type {{ ts?: number, method?: string, httpMethod?: string, url?: string, target?: string, formBody?: string, formEnctype?: string, formFiles?: boolean, stack?: string[] }} */ (
         payload
       )
     const httpMethod =
@@ -2619,6 +2833,16 @@
     if (data.formFiles === true) {
       out.formFiles = true
     }
+    if (navProbe) {
+      emitDebugNav('LOCATION', {
+        ts: out.ts,
+        method: out.method,
+        url: out.url,
+        target: out.target,
+        stack: Array.isArray(data.stack) ? data.stack : [],
+      })
+      return
+    }
     postToParent('VC_LOCATION', out)
   }
 
@@ -2629,7 +2853,7 @@
     if (!payload || typeof payload !== 'object') {
       return
     }
-    const data = /** @type {{ ts?: number, method?: string, url?: string, title?: string, state?: unknown }} */ (
+    const data = /** @type {{ ts?: number, method?: string, url?: string, title?: string, state?: unknown, stack?: string[] }} */ (
       payload
     )
     const url = typeof data.url === 'string' ? data.url : ''
@@ -2639,6 +2863,17 @@
     if (url) {
       currentContentUrl = url
       recordHistory('spa:' + method, url, title)
+    }
+
+    if (navProbe) {
+      emitDebugNav('HISTORY', {
+        ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+        method: method,
+        url: url,
+        title: title || undefined,
+        stack: Array.isArray(data.stack) ? data.stack : [],
+      })
+      return
     }
 
     postToParent('VC_HISTORY', {
@@ -2836,6 +3071,65 @@
       networkDisableCache = data.disableCache
     }
     postNetworkOptsToSw()
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function applyDebugOptions(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    if (typeof data.navProbe === 'boolean') {
+      setNavProbe(data.navProbe)
+    }
+  }
+
+  /**
+   * @param {string} kind
+   * @param {Record<string, unknown>} data
+   */
+  function emitDebugNav(kind, data) {
+    /** @type {Record<string, unknown>} */
+    const out = {
+      kind: kind,
+      ts: typeof data.ts === 'number' ? data.ts : Date.now(),
+    }
+    if (typeof data.method === 'string') {
+      out.method = data.method
+    }
+    if (typeof data.url === 'string') {
+      out.url = data.url
+    }
+    if (typeof data.href === 'string') {
+      out.href = data.href
+    }
+    if (typeof data.target === 'string') {
+      out.target = data.target
+    }
+    if (typeof data.tagName === 'string') {
+      out.tagName = data.tagName
+    }
+    if (typeof data.text === 'string') {
+      out.text = data.text
+    }
+    if (typeof data.title === 'string') {
+      out.title = data.title
+    }
+    if (Array.isArray(data.stack)) {
+      out.stack = data.stack.filter(function (line) {
+        return typeof line === 'string'
+      })
+    }
+    DebugPanel.nav({
+      kind: kind,
+      method: typeof out.method === 'string' ? out.method : undefined,
+      url: typeof out.url === 'string' ? out.url : undefined,
+      href: typeof out.href === 'string' ? out.href : undefined,
+      target: typeof out.target === 'string' ? out.target : undefined,
+      tagName: typeof out.tagName === 'string' ? out.tagName : undefined,
+      stack: Array.isArray(out.stack) ? /** @type {string[]} */ (out.stack) : [],
+      ts: /** @type {number} */ (out.ts),
+    })
+    postToParent('VC_DEBUG_NAV', out)
   }
 
   function dropArchiveEntry(entryId) {

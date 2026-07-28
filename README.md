@@ -15,6 +15,7 @@
 - [x] Network：`VC_NETWORK_UPDATED` + `VC_NETWORK_READ`（SW 代理流量，UUID 增量）
 - [x] `public/inject.js`（console hook、dialog noop）
 - [x] **被动 WebView**（build `20260727-v15`+）：子页不自主换页；`VC_CLICK` / `VC_LOCATION` 上报意图，父级 `VC_NAVIGATE` 为唯一整页换址入口
+- [x] **导航探针**（build `20260728-v19`+）：`VC_DEBUG_OPTIONS { navProbe }` 抑制导航上报并展示触发栈（viewer「导航」tab / `VC_DEBUG_NAV`）
 - [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`
 - [x] ~~Session / BrowserContext~~（已在 build `20260728-v12` 移除）：单用户全局 cookie / storage；清状态用 `VC_CLEAR_STATE`
 - [x] screenshot（build `20260727-v29`+）：`VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`，Base64 回传

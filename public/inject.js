@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v18'
+  var VC_BUILD = '20260728-v19'
 
   if (window.__vcInjected) {
     return
@@ -131,7 +131,85 @@
     return null
   }
 
+  function captureNavStack() {
+    var raw = ''
+    try {
+      raw = new Error().stack || ''
+    } catch {
+      return []
+    }
+    var lines = raw.split('\n')
+    var out = []
+    var skipRe =
+      /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|vc-report|vc-stack|vc-passive-nav|__vcImport|client\.js|chrome-extension:)/i
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      if (!line || line.indexOf('Error') === 0) {
+        continue
+      }
+      if (skipRe.test(line)) {
+        continue
+      }
+      out.push(line)
+      if (out.length >= 20) {
+        break
+      }
+    }
+    return out
+  }
+
+  function findBridgeForNav() {
+    var handlers = ['__vcOnInjectClick', '__vcOnInjectLocation', '__vcOnInjectHistory']
+    var w = window
+    while (w) {
+      try {
+        for (var i = 0; i < handlers.length; i++) {
+          if (typeof w[handlers[i]] === 'function') {
+            return w
+          }
+        }
+        if (w === w.top) {
+          break
+        }
+        w = w.parent
+      } catch {
+        break
+      }
+    }
+    return null
+  }
+
+  function isNavProbe() {
+    try {
+      var bridge = findBridgeForNav()
+      if (bridge && bridge.__vcDebugOpts && bridge.__vcDebugOpts.navProbe === true) {
+        return true
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      var w = window
+      while (w) {
+        if (w.__vcDebugOpts && w.__vcDebugOpts.navProbe === true) {
+          return true
+        }
+        if (w === w.top) {
+          break
+        }
+        w = w.parent
+      }
+    } catch {
+      // ignore
+    }
+    return false
+  }
+
   function forwardInject(kind, payload) {
+    var out = payload
+    if (isNavProbe()) {
+      out = Object.assign({}, payload, { stack: captureNavStack() })
+    }
     var handlerName =
       kind === 'CLICK'
         ? '__vcOnInjectClick'
@@ -145,7 +223,7 @@
       while (w) {
         try {
           if (typeof w[handlerName] === 'function') {
-            w[handlerName](payload)
+            w[handlerName](out)
             return
           }
           if (w === w.top) {
@@ -158,7 +236,7 @@
       }
     }
     try {
-      window.parent.postMessage([CHANNEL, kind, payload], '*')
+      window.parent.postMessage([CHANNEL, kind, out], '*')
     } catch {
       // ignore
     }

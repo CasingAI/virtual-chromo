@@ -4,6 +4,7 @@ import * as env from './env.js'
 import * as hook from './hook.js'
 import {createFakeLoc} from './fakeloc.js'
 import {createStorage, setStorageMessenger, handleStoragePush, clearAllStorage} from './storage.js'
+import {captureStack, inferScriptUrl} from './vc-stack.js'
 
 
 const {
@@ -32,60 +33,6 @@ function makeTipId() {
     // ignore
   }
   return String(Date.now()) + '-' + Math.random().toString(16).slice(2)
-}
-
-/**
- * @returns {string[]}
- */
-function captureStack() {
-  let raw = ''
-  try {
-    raw = new Error().stack || ''
-  } catch {
-    return []
-  }
-  const lines = raw.split('\n')
-  /** @type {string[]} */
-  const out = []
-  const skipRe =
-    /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|__vcImport|client\.js|chrome-extension:)/i
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i].trim()
-    if (!line || line.indexOf('Error') === 0) {
-      continue
-    }
-    if (skipRe.test(line)) {
-      continue
-    }
-    out.push(line)
-    if (out.length >= 20) {
-      break
-    }
-  }
-  return out
-}
-
-/**
- * @param {string[]} frames
- * @param {Window|WorkerGlobalScope} global
- * @returns {string}
- */
-function inferScriptUrl(frames, global) {
-  for (let i = 0; i < frames.length; i++) {
-    const m = String(frames[i]).match(/https?:\/\/[^\s)\]]+/i)
-    if (m) {
-      return m[0].replace(/:\d+:\d+$/, '')
-    }
-  }
-  try {
-    const doc = global.document
-    if (doc && doc.currentScript && doc.currentScript.src) {
-      return String(doc.currentScript.src)
-    }
-  } catch {
-    // ignore
-  }
-  return ''
 }
 
 /**
