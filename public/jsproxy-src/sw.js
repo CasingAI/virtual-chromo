@@ -1347,9 +1347,17 @@ global.addEventListener('message', e => {
 
   case MSG.PAGE_COOKIE_CLEAR: {
     const rpcId = val && typeof val.id === 'string' ? val.id : ''
-    const domain = val && typeof val.domain === 'string' ? val.domain : ''
+    const domain = val && typeof val.domain === 'string' ? val.domain.trim() : ''
+    if (!domain) {
+      sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'domain required', code: 'DOMAIN_REQUIRED' },
+      })
+      break
+    }
     e.waitUntil(
-      cookie.clearByDomain(domain || undefined).then((n) => {
+      cookie.clearByDomain(domain).then((n) => {
         sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
           id: rpcId,
           ok: true,
@@ -1359,7 +1367,30 @@ global.addEventListener('message', e => {
         sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
           id: rpcId,
           ok: false,
-          error: { message: String(err), code: 'COOKIE_CLEAR_FAILED' },
+          error: {
+            message: String(err && err.message ? err.message : err),
+            code: (err && err.code) || 'COOKIE_CLEAR_FAILED',
+          },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_COOKIE_CLEAR_ALL: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    e.waitUntil(
+      cookie.clearAll().then(() => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { cleared: -1 },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'COOKIE_CLEAR_ALL_FAILED' },
         })
       }),
     )
@@ -1641,23 +1672,54 @@ global.addEventListener('message', e => {
 
   case MSG.PAGE_NETWORK_CACHE_CLEAR: {
     const rpcId = val && typeof val.id === 'string' ? val.id : ''
-    const layer =
-      val && (val.layer === 'hot' || val.layer === 'archive' || val.layer === 'all')
-        ? val.layer
-        : 'all'
-    const origin = val && typeof val.origin === 'string' ? val.origin : ''
+    const origin = val && typeof val.origin === 'string' ? val.origin.trim() : ''
+    if (!origin) {
+      sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'origin required', code: 'ORIGIN_REQUIRED' },
+      })
+      break
+    }
     e.waitUntil(
-      netCache.clearNetworkCacheLayer(layer, origin ? { origin } : undefined).then(() => {
+      netCache.clearHotByOrigin(origin).then(() => {
         sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
           id: rpcId,
           ok: true,
-          value: { layer, origin: origin || undefined },
+          value: { layer: 'hot', origin },
         })
       }).catch((err) => {
         sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
           id: rpcId,
           ok: false,
-          error: { message: String(err), code: 'CACHE_CLEAR_FAILED' },
+          error: {
+            message: String(err && err.message ? err.message : err),
+            code: (err && err.code) || 'CACHE_CLEAR_FAILED',
+          },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_CLEAR_ALL: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const layer =
+      val && (val.layer === 'hot' || val.layer === 'archive' || val.layer === 'all')
+        ? val.layer
+        : 'all'
+    e.waitUntil(
+      netCache.clearNetworkCacheLayer(layer).then(() => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_ALL_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_CLEAR_ALL_FAILED' },
         })
       }),
     )

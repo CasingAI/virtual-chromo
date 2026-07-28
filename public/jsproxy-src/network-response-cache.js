@@ -956,41 +956,47 @@ export async function clearAllNetworkCaches() {
 }
 
 /**
- * @param {'hot'|'archive'|'all'} layer
- * @param {{ origin?: string }=} opts
+ * Clear hot cache entries whose stored URL matches origin. Origin is required.
+ * @param {string} origin
  */
-export async function clearNetworkCacheLayer(layer, opts) {
-  const origin =
-    opts && typeof opts.origin === 'string' ? opts.origin.trim() : ''
+export async function clearHotByOrigin(origin) {
+  const trimmed = typeof origin === 'string' ? origin.trim() : ''
+  if (!trimmed) {
+    throw Object.assign(new Error('origin required'), { code: 'ORIGIN_REQUIRED' })
+  }
+  await rebuildHotIndex()
+  try {
+    const cache = await caches.open(HOT_CACHE)
+    const keys = await cache.keys()
+    for (const req of keys) {
+      const indexed = mHotIndex.get(req.url)
+      let entryUrl = indexed && indexed.url ? indexed.url : ''
+      if (!entryUrl) {
+        const res = await cache.match(req)
+        if (res) {
+          entryUrl = readHotMeta(res).url || ''
+        }
+      }
+      if (hotUrlMatchesOrigin(trimmed, entryUrl)) {
+        await evictHotUrl(req.url)
+      }
+    }
+  } catch (err) {
+    console.warn('[vc] clear hot by origin fail:', err)
+    throw err
+  }
+}
 
+/**
+ * Clear an entire network-cache layer (or all). Does not accept origin scoping.
+ * @param {'hot'|'archive'|'all'} layer
+ */
+export async function clearNetworkCacheLayer(layer) {
   if (layer === 'all') {
     await clearAllNetworkCaches()
     return
   }
   if (layer === 'hot') {
-    if (origin) {
-      await rebuildHotIndex()
-      try {
-        const cache = await caches.open(HOT_CACHE)
-        const keys = await cache.keys()
-        for (const req of keys) {
-          const indexed = mHotIndex.get(req.url)
-          let entryUrl = indexed && indexed.url ? indexed.url : ''
-          if (!entryUrl) {
-            const res = await cache.match(req)
-            if (res) {
-              entryUrl = readHotMeta(res).url || ''
-            }
-          }
-          if (hotUrlMatchesOrigin(origin, entryUrl)) {
-            await evictHotUrl(req.url)
-          }
-        }
-      } catch (err) {
-        console.warn('[vc] clear hot by origin fail:', err)
-      }
-      return
-    }
     mHotIndex.clear()
     try {
       await caches.delete(HOT_CACHE)

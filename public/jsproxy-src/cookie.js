@@ -326,15 +326,15 @@ export function deleteById(id) {
 }
 
 /**
- * @param {string} [domain]
+ * @param {string} domain
  * @returns {Promise<number>}
  */
 export async function clearByDomain(domain) {
-  if (!domain) {
-    await clearAll()
-    return -1
+  const trimmed = typeof domain === 'string' ? domain.trim() : ''
+  if (!trimmed) {
+    throw Object.assign(new Error('domain required'), { code: 'DOMAIN_REQUIRED' })
   }
-  const n = mJar.clearByDomain(domain)
+  const n = mJar.clearByDomain(trimmed)
   await saveAll()
   return n
 }

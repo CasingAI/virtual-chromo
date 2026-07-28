@@ -35,6 +35,10 @@
   const MSG_SW_NETWORK_CACHE_LIST_REPLY = 331
   const MSG_PAGE_NETWORK_CACHE_CLEAR = 332
   const MSG_SW_NETWORK_CACHE_CLEAR_REPLY = 333
+  const MSG_PAGE_COOKIE_CLEAR_ALL = 334
+  const MSG_SW_COOKIE_CLEAR_ALL_REPLY = 335
+  const MSG_PAGE_NETWORK_CACHE_CLEAR_ALL = 336
+  const MSG_SW_NETWORK_CACHE_CLEAR_ALL_REPLY = 337
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -1175,6 +1179,9 @@
     if (cmd === MSG_SW_COOKIE_CLEAR_REPLY && payload && typeof payload === 'object') {
       settleSwAppWaiter(MSG_SW_COOKIE_CLEAR_REPLY, payload)
     }
+    if (cmd === MSG_SW_COOKIE_CLEAR_ALL_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_COOKIE_CLEAR_ALL_REPLY, payload)
+    }
     if (cmd === MSG_SW_NETWORK_CACHE_STATS_REPLY && payload && typeof payload === 'object') {
       settleSwAppWaiter(MSG_SW_NETWORK_CACHE_STATS_REPLY, payload)
     }
@@ -1183,6 +1190,9 @@
     }
     if (cmd === MSG_SW_NETWORK_CACHE_CLEAR_REPLY && payload && typeof payload === 'object') {
       settleSwAppWaiter(MSG_SW_NETWORK_CACHE_CLEAR_REPLY, payload)
+    }
+    if (cmd === MSG_SW_NETWORK_CACHE_CLEAR_ALL_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_NETWORK_CACHE_CLEAR_ALL_REPLY, payload)
     }
   }
 
@@ -1209,10 +1219,11 @@
           cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_NETWORK_BODY_READ_LINES' ||
           cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT' ||
           cmd === 'VC_COOKIE_LIST' || cmd === 'VC_COOKIE_DELETE' || cmd === 'VC_COOKIE_CLEAR' ||
+          cmd === 'VC_COOKIE_CLEAR_ALL' ||
           cmd === 'VC_STORAGE_LIST' || cmd === 'VC_STORAGE_SET' || cmd === 'VC_STORAGE_REMOVE' ||
           cmd === 'VC_STORAGE_CLEAR' || cmd === 'VC_SW_INFO' ||
           cmd === 'VC_NETWORK_CACHE_STATS' || cmd === 'VC_NETWORK_CACHE_LIST' ||
-          cmd === 'VC_NETWORK_CACHE_CLEAR' ||
+          cmd === 'VC_NETWORK_CACHE_CLEAR' || cmd === 'VC_NETWORK_CACHE_CLEAR_ALL' ||
           cmd === 'VC_IDB_LIST' || cmd === 'VC_IDB_DELETE' || cmd === 'VC_IDB_STORES' ||
           cmd === 'VC_IDB_GET_ALL' ||
           cmd === 'VC_SITE_CACHE_LIST' || cmd === 'VC_SITE_CACHE_KEYS' ||
@@ -1300,6 +1311,9 @@
       case 'VC_COOKIE_CLEAR':
         swAppRpc(MSG_SW_COOKIE_CLEAR_REPLY, MSG_PAGE_COOKIE_CLEAR, payload && typeof payload === 'object' ? payload : {}, 'VC_COOKIE_CLEAR_RESULT')
         break
+      case 'VC_COOKIE_CLEAR_ALL':
+        swAppRpc(MSG_SW_COOKIE_CLEAR_ALL_REPLY, MSG_PAGE_COOKIE_CLEAR_ALL, payload && typeof payload === 'object' ? payload : {}, 'VC_COOKIE_CLEAR_ALL_RESULT')
+        break
       case 'VC_NETWORK_CACHE_STATS':
         swAppRpc(MSG_SW_NETWORK_CACHE_STATS_REPLY, MSG_PAGE_NETWORK_CACHE_STATS, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_STATS_RESULT')
         break
@@ -1308,6 +1322,9 @@
         break
       case 'VC_NETWORK_CACHE_CLEAR':
         swAppRpc(MSG_SW_NETWORK_CACHE_CLEAR_REPLY, MSG_PAGE_NETWORK_CACHE_CLEAR, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_CLEAR_RESULT')
+        break
+      case 'VC_NETWORK_CACHE_CLEAR_ALL':
+        swAppRpc(MSG_SW_NETWORK_CACHE_CLEAR_ALL_REPLY, MSG_PAGE_NETWORK_CACHE_CLEAR_ALL, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_CLEAR_ALL_RESULT')
         break
       case 'VC_STORAGE_LIST':
         handleStorageList(payload)
