@@ -25,7 +25,7 @@
 
 ## virtual-chromo 定制
 
-**Session / BrowserContext**（build `20260727-v17`+）：[`session.js`](session.js)、[`session-storage.js`](session-storage.js)；URL 前缀 `/s/<sessionId>/`；cookie / storage 按 session 隔离。
+单用户全局状态（build `20260728-v12`+）：无 BrowserContext / `session.js`；cookie 单 jar；storage 按 siteOrigin；代理 URL 为 `/-----https://…`；热缓存为全局 `method+url+TTL`。清状态用 `VC_CLEAR_STATE`。
 
 `index.vc.js` 相对上游 `index.js` 的改动（为双层 iframe 外壳）：
 

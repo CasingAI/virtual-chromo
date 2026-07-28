@@ -3,8 +3,7 @@ import * as route from './route.js'
 import * as env from './env.js'
 import * as hook from './hook.js'
 import {createFakeLoc} from './fakeloc.js'
-import {createStorage, setStorageMessenger, handleStoragePush, clearSessionStorage} from './storage.js'
-import * as session from './session.js'
+import {createStorage, setStorageMessenger, handleStoragePush, clearAllStorage} from './storage.js'
 
 
 const {
@@ -163,11 +162,9 @@ function reportInitiator(opts, global) {
  * 
  * @param {Window} global WindowOrWorkerGlobalScope
  * @param {string} origin 
- * @param {string=} sessionId
  */
-export function init(global, origin, sessionId) {
-  const sid = sessionId || session.getCurrentSessionId()
-  createStorage(global, origin, sid)
+export function init(global, origin) {
+  createStorage(global, origin)
 
   // Dynamic import() helper — jsfilter rewrites `import(` → `__vcImport(`
   try {

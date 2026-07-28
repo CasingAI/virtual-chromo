@@ -4,7 +4,7 @@ import * as urlx from './urlx.js'
 import * as util from './util'
 import * as tld from './tld.js'
 import * as cdn from './cdn.js'
-import * as session from './session.js'
+import * as httpCache from './http-cache-policy.js'
 import * as fetchCtx from './network-fetch-context.js'
 import {Database} from './database.js'
 
@@ -43,7 +43,7 @@ export async function setDB(db) {
  * @param {string} url
  */
 function cacheKey(url) {
-  return `${session.getCurrentSessionId()}:${url}`
+  return url
 }
 
 
@@ -71,7 +71,6 @@ async function setUrlCache(url, host, info, expires) {
   const key = cacheKey(url)
   await mDB.put('url-cache', {
     url: key,
-    sessionId: session.getCurrentSessionId(),
     targetUrl: url,
     host,
     info,
@@ -92,20 +91,21 @@ async function delUrlCache(url) {
 
 
 /**
- * @param {string} sessionId
+ * Clear all proxy node url-cache entries.
  */
-export async function destroySessionCache(sessionId) {
+export async function clearUrlCache() {
   if (!mDB) {
     return
   }
   await mDB.enum('url-cache', rec => {
-    const sid = rec.sessionId ||
-      (typeof rec.url === 'string' ? rec.url.split(':')[0] : '')
-    if (sid === sessionId) {
-      mDB.delete('url-cache', rec.url)
-    }
+    mDB.delete('url-cache', rec.url)
     return true
   })
+}
+
+/** @deprecated */
+export async function destroySessionCache(_sessionId) {
+  await clearUrlCache()
 }
 
 
@@ -128,34 +128,6 @@ function getReqCookie(targetUrlObj, clientUrlObj, req) {
     }
   }
   return cookie.query(targetUrlObj)
-}
-
-
-/**
- * @param {Headers} header 
- */
-function parseResCache(header) {
-  const cacheStr = header.get('cache-control')
-  if (cacheStr) {
-    if (/no-cache/i.test(cacheStr)) {
-      return -1
-    }
-    const m = cacheStr.match(/(?:^|,\s*)max-age=["]?(\d+)/i)
-    if (m) {
-      const sec = +m[1]
-      if (sec > 0) {
-        return sec
-      }
-    }
-  }
-  const expires = header.get('expires')
-  if (expires) {
-    const ts = Date.parse(expires)
-    if (ts > 0) {
-      return (ts - Date.now()) / 1000 | 0
-    }
-  }
-  return 0
 }
 
 
@@ -507,7 +479,7 @@ export async function launch(req, urlObj, cliUrlObj) {
 
 
   if (method === 'GET' && status === 200) {
-    const cacheSec = parseResCache(headers)
+    const cacheSec = httpCache.parseResCacheSeconds(headers)
     if (cacheSec >= 0) {
       const expires = util.getTimeSeconds() + cacheSec + 1000
       setUrlCache(url, host, rawInfo, expires)

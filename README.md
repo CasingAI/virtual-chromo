@@ -16,7 +16,7 @@
 - [x] `public/inject.js`（console hook、dialog noop）
 - [x] **被动 WebView**（build `20260727-v15`+）：子页不自主换页；`VC_CLICK` / `VC_LOCATION` 上报意图，父级 `VC_NAVIGATE` 为唯一整页换址入口
 - [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`
-- [x] **Session / BrowserContext**（build `20260727-v17`+）：`/s/<sessionId>/` 路由、cookie/storage 按 session 隔离、多 tab 共享、`VC_SESSION_*` 协议
+- [x] ~~Session / BrowserContext~~（已在 build `20260728-v12` 移除）：单用户全局 cookie / storage；清状态用 `VC_CLEAR_STATE`
 - [x] screenshot（build `20260727-v29`+）：`VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`，Base64 回传
 - [ ] 父项目 Page SDK（`createChromoPage(iframe)`）
 - [ ] 用可读源码替换 jsproxy 压缩 `bundle.js`
@@ -28,7 +28,7 @@
 - **viewer.html**：iframe 外壳，注册 Service Worker，内层 `#content` iframe 加载代理页面
 - **bridge.js**：与父项目的 postMessage 协议（见 [docs/protocol.md](docs/protocol.md)）
 - **被动 WebView**：子页点击 / 改 location 只上报（`VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`），不自主导航；整页换址仅由父级 `VC_NAVIGATE` 触发
-- **Session（BrowserContext）**：每个 `sessionId` 独立 cookie / storage；URL 前缀 `/s/<sessionId>/`；同一 session 多 tab 共享登录态（见 [docs/protocol.md#sessionbrowsercontext](docs/protocol.md)）
+- **浏览状态（单用户）**：全局 cookie jar、按 siteOrigin 隔离的 storage、全局 DevTools hot cache（见 [docs/protocol.md](docs/protocol.md)）
 - **bundle.built.js**：jsproxy 源码构建产物（Service Worker 运行时加载；见 [jsproxy-src/](public/jsproxy-src/)）
   - [bundle.formatted.js](public/bundle.formatted.js) — beautify 副本（`npm run format:bundle`）
   - [bundle.reconstructed.js](public/bundle.reconstructed.js) — 还原可读源码（变量名、模块结构；`npm run reconstruct:bundle`）
@@ -82,30 +82,25 @@ cd docs && python3 -m http.server 8788
 npm run deploy
 ```
 
-部署后 iframe 入口：`https://<your-worker>.workers.dev/s/<sessionId>/`
+部署后 iframe 入口：`https://<your-worker>.workers.dev/viewer`（或 `/`）
 
-- **推荐**：父项目为每个 BrowserContext 生成 UUID，iframe `src` 指向 `/s/<uuid>/`
-- **Legacy**：根路径 `/` 归入 `default` session（与 `/s/…` 状态不互通，deprecated）
+- 代理页路径：`/-----https://example.com/`
+- 旧书签 `/s/<id>/-----…` 仍可解码，但新导航不再生成 `/s/`
 
 ## 父项目接入
 
-每个 iframe 对应一个 **session**（Playwright 的 `BrowserContext`）。不同 session 之间 cookie / storage 隔离；同一 session 内开多个 iframe 则共享登录态。
+单 Chromo 实例使用**全局** cookie / storage（按 siteOrigin 隔离 storage）。清空状态请发 `VC_CLEAR_STATE`。
 
 ```html
 <iframe
   id="chromo"
-  src="https://your-worker.workers.dev/s/YOUR-SESSION-UUID/"
+  src="https://your-worker.workers.dev/viewer"
   sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
   style="width:100%;height:100%;border:none"
 ></iframe>
 ```
 
-也可先嵌入任意入口，再由 iframe 内创建 session 并跳转：
-
 ```javascript
-// 创建 session（iframe 会导航到 /s/<id>/ 并上报 VC_SESSION_CREATED）
-iframe.contentWindow.postMessage(['VC_SESSION_CREATE', {}], '*')
-
 // 监听就绪后导航
 window.addEventListener('message', (event) => {
   if (event.source !== iframe.contentWindow) return
@@ -114,11 +109,10 @@ window.addEventListener('message', (event) => {
   }
 })
 
-// 销毁 BrowserContext（清空该 session 全部 cookie / storage）
-iframe.contentWindow.postMessage(['VC_SESSION_DESTROY', { sessionId: 'YOUR-SESSION-UUID' }], '*')
+// 清空全局 cookie / storage / 网络缓存
+iframe.contentWindow.postMessage(['VC_CLEAR_STATE'], '*')
+// iframe 完成后上报 VC_CLEAR_STATE_DONE
 ```
-
-`VC_NAVIGATE` 等命令不变；bridge 会自动把代理路径写成 `/s/<sessionId>/-----https://…`。
 
 **导航事件分工**（SPA 站点必读）：
 
@@ -132,10 +126,9 @@ iframe.contentWindow.postMessage(['VC_SESSION_DESTROY', { sessionId: 'YOUR-SESSI
 
 ## 注意事项
 
-- 首次打开 viewer 入口会安装 Service Worker 并可能自动刷新一次（`/s/<sessionId>/` 或 legacy `/`）
+- 首次打开 viewer 入口会安装 Service Worker 并可能自动刷新一次（`/viewer` 或 `/`）
 - 父项目页面不要与 Worker 部署在同一域名根路径下
-- 关 tab **不会**清 session；要 wipe 状态请发 `VC_SESSION_DESTROY`
-- 同一 session 可开多个 iframe tab，cookie / localStorage 会同步；不同 session 互不影响
+- 要 wipe 浏览状态请发 `VC_CLEAR_STATE`（清空 cookie / storage / hot / archive / url-cache）
 - 继承 jsproxy CF Worker 版限制：无 WebSocket 代理、无外链白名单
 
 ## License

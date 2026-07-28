@@ -1,5 +1,4 @@
 import {Database} from './database.js'
-import * as session from './session.js'
 
 
 /** @type {Database} */
@@ -10,20 +9,18 @@ const mMem = new Map()
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  */
-function memKey(sessionId, siteOrigin) {
-  return `${sessionId}\0${siteOrigin}`
+function memKey(siteOrigin) {
+  return siteOrigin
 }
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  */
-function getMemMap(sessionId, siteOrigin) {
-  const k = memKey(sessionId, siteOrigin)
+function getMemMap(siteOrigin) {
+  const k = memKey(siteOrigin)
   let map = mMem.get(k)
   if (!map) {
     map = new Map()
@@ -34,12 +31,11 @@ function getMemMap(sessionId, siteOrigin) {
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  * @param {string} key
  */
-function storageId(sessionId, siteOrigin, key) {
-  return `${sessionId}$${siteOrigin}$${key}`
+function storageId(siteOrigin, key) {
+  return siteOrigin + '$' + key
 }
 
 
@@ -52,19 +48,18 @@ export async function setDB(db) {
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  * @param {string} key
  */
-export async function getItem(sessionId, siteOrigin, key) {
-  const map = getMemMap(sessionId, siteOrigin)
+export async function getItem(siteOrigin, key) {
+  const map = getMemMap(siteOrigin)
   if (map.has(key)) {
     return map.get(key)
   }
   if (!mDB) {
     return null
   }
-  const rec = await mDB.get('web-storage', storageId(sessionId, siteOrigin, key))
+  const rec = await mDB.get('web-storage', storageId(siteOrigin, key))
   if (rec && rec.value !== undefined) {
     map.set(key, rec.value)
     return rec.value
@@ -74,17 +69,15 @@ export async function getItem(sessionId, siteOrigin, key) {
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  * @param {string} key
  * @param {string} value
  */
-export async function setItem(sessionId, siteOrigin, key, value) {
-  getMemMap(sessionId, siteOrigin).set(key, value)
+export async function setItem(siteOrigin, key, value) {
+  getMemMap(siteOrigin).set(key, value)
   if (mDB) {
     await mDB.put('web-storage', {
-      id: storageId(sessionId, siteOrigin, key),
-      sessionId,
+      id: storageId(siteOrigin, key),
       siteOrigin,
       key,
       value,
@@ -94,29 +87,27 @@ export async function setItem(sessionId, siteOrigin, key, value) {
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  * @param {string} key
  */
-export async function removeItem(sessionId, siteOrigin, key) {
-  getMemMap(sessionId, siteOrigin).delete(key)
+export async function removeItem(siteOrigin, key) {
+  getMemMap(siteOrigin).delete(key)
   if (mDB) {
-    await mDB.delete('web-storage', storageId(sessionId, siteOrigin, key))
+    await mDB.delete('web-storage', storageId(siteOrigin, key))
   }
 }
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  */
-export async function clear(sessionId, siteOrigin) {
-  mMem.delete(memKey(sessionId, siteOrigin))
+export async function clear(siteOrigin) {
+  mMem.delete(memKey(siteOrigin))
   if (!mDB) {
     return
   }
   await mDB.enum('web-storage', rec => {
-    if (rec.sessionId === sessionId && rec.siteOrigin === siteOrigin) {
+    if (rec.siteOrigin === siteOrigin) {
       mDB.delete('web-storage', rec.id)
     }
     return true
@@ -124,22 +115,59 @@ export async function clear(sessionId, siteOrigin) {
 }
 
 
-/**
- * @param {string} sessionId
- */
-export async function destroySession(sessionId) {
-  for (const k of mMem.keys()) {
-    if (k.startsWith(sessionId + '\0')) {
-      mMem.delete(k)
-    }
-  }
+export async function clearAll() {
+  mMem.clear()
   if (!mDB) {
     return
   }
   await mDB.enum('web-storage', rec => {
-    if (rec.sessionId === sessionId) {
-      mDB.delete('web-storage', rec.id)
-    }
+    mDB.delete('web-storage', rec.id)
     return true
   })
+}
+
+
+/**
+ * @param {string} siteOrigin
+ * @returns {Promise<{ key: string, value: string }[]>}
+ */
+export async function listByOrigin(siteOrigin) {
+  /** @type {Map<string, string>} */
+  const out = new Map()
+  const mem = mMem.get(memKey(siteOrigin))
+  if (mem) {
+    for (const [k, v] of mem) {
+      out.set(k, v)
+    }
+  }
+  if (mDB) {
+    await mDB.enum('web-storage', rec => {
+      if (rec.siteOrigin === siteOrigin && typeof rec.key === 'string') {
+        out.set(rec.key, rec.value)
+      }
+      return true
+    })
+  }
+  return [...out.entries()].map(([key, value]) => ({ key, value }))
+}
+
+
+/**
+ * @returns {Promise<string[]>}
+ */
+export async function listOrigins() {
+  /** @type {Set<string>} */
+  const set = new Set()
+  for (const k of mMem.keys()) {
+    set.add(k)
+  }
+  if (mDB) {
+    await mDB.enum('web-storage', rec => {
+      if (typeof rec.siteOrigin === 'string' && rec.siteOrigin) {
+        set.add(rec.siteOrigin)
+      }
+      return true
+    })
+  }
+  return [...set].sort()
 }

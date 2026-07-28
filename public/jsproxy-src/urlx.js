@@ -1,13 +1,11 @@
 import * as util from './util.js'
 import * as env from './env.js'
 import * as path from './path.js'
-import * as session from './session.js'
 import * as tld from './tld.js'
 
 
 const PREFIX = path.PREFIX
 const PREFIX_LEN = PREFIX.length
-const ROOT_LEN = path.ROOT.length
 const PROXY_MARKER = '/-----'
 
 /**
@@ -86,12 +84,12 @@ export function isRecaptchaUrl(url, baseUrl) {
     return false
   }
   const host = urlObj.hostname
-  const path = urlObj.pathname
+  const pathName = urlObj.pathname
   if (host === 'www.google.com' || host === 'google.com') {
-    return path.includes('/recaptcha')
+    return pathName.includes('/recaptcha')
   }
   if (host === 'www.gstatic.com' || host === 'gstatic.com') {
-    return path.includes('/recaptcha')
+    return pathName.includes('/recaptcha')
   }
   return true
 }
@@ -131,7 +129,6 @@ function isInternalUrl(url) {
  */
 export function newUrl(url, baseUrl) {
   try {
-    // [safari] baseUrl 不能为空
     return baseUrl
       ? new URL(url, baseUrl)
       : new URL(url)
@@ -141,40 +138,19 @@ export function newUrl(url, baseUrl) {
 
 
 /**
- * @param {string} urlStr
+ * Always `{origin}/-----` (no /s/<sessionId>/).
+ * @param {string=} origin
  */
-function applySessionFromUrl(urlStr) {
-  const parsed = session.parseSessionFromUrl(urlStr)
-  session.setCurrentSessionId(parsed.sessionId)
-  return parsed
-}
-
-
-/**
- * @param {URL | Location} urlObj
- * @param {string=} sessionId
- */
-export function encUrlObj(urlObj, sessionId) {
-  const fullUrl = urlObj.href
-  if (isInternalUrl(fullUrl)) {
-    return fullUrl
-  }
-  const sid = sessionId || session.getCurrentSessionId()
-  const embedded = encodeProxyTarget(fullUrl)
-
-  // Page context: path.PREFIX already includes /s/{sessionId}/ from real location.
-  // Do NOT use urlObj.origin (target site) — that produced google.com/-----https://...
-  if (!sessionId && !env.isSwEnv() && PREFIX) {
-    return PREFIX + embedded
-  }
-
-  let proxyOrigin = ''
-  try {
-    if (path.ROOT && /^https?:/i.test(path.ROOT)) {
-      proxyOrigin = new URL(path.ROOT).origin
+export function getProxyPrefix(origin) {
+  let proxyOrigin = origin || ''
+  if (!proxyOrigin) {
+    try {
+      if (path.ROOT && /^https?:/i.test(path.ROOT)) {
+        proxyOrigin = new URL(path.ROOT).origin
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
   if (!proxyOrigin) {
     try {
@@ -183,7 +159,26 @@ export function encUrlObj(urlObj, sessionId) {
       proxyOrigin = ''
     }
   }
-  return session.getProxyPrefix(proxyOrigin, sid) + embedded
+  return `${proxyOrigin}/-----`
+}
+
+
+/**
+ * @param {URL | Location} urlObj
+ */
+export function encUrlObj(urlObj) {
+  const fullUrl = urlObj.href
+  if (isInternalUrl(fullUrl)) {
+    return fullUrl
+  }
+  const embedded = encodeProxyTarget(fullUrl)
+
+  // Page context: path.PREFIX already includes /----- from real location.
+  if (!env.isSwEnv() && PREFIX) {
+    return PREFIX + embedded
+  }
+
+  return getProxyPrefix() + embedded
 }
 
 const IS_SW = env.isSwEnv()
@@ -235,18 +230,24 @@ export function decUrlObj(urlObj) {
   if (fullUrl.startsWith(PREFIX)) {
     target = fullUrl.substr(PREFIX_LEN)
   } else {
-    const parsed = session.parseSessionFromUrl(fullUrl)
-    session.setCurrentSessionId(parsed.sessionId)
-    const idx = parsed.restPath.indexOf(PROXY_MARKER)
+    const idx = fullUrl.indexOf(PROXY_MARKER)
     if (idx === -1) {
-      return fullUrl
+      // Legacy /s/<id>/----- embeds: still decode for old bookmarks
+      const legacy = fullUrl.match(/\/s\/[^/]+(\/-----.+)$/)
+      if (legacy) {
+        const rest = legacy[1]
+        const mIdx = rest.indexOf(PROXY_MARKER)
+        target = rest.substr(mIdx + PROXY_MARKER.length)
+      } else {
+        return fullUrl
+      }
+    } else {
+      target = fullUrl.substr(idx + PROXY_MARKER.length)
     }
-    target = parsed.restPath.substr(idx + PROXY_MARKER.length)
   }
 
   target = decodeProxyTarget(target)
 
-  // Legacy / unescaped embeds: browser moved ?query onto the proxy URL.
   if (urlObj.search && target.indexOf('?') === -1) {
     target += urlObj.search
   }
@@ -387,16 +388,53 @@ function padUrl(part) {
  * @param {string} urlStr
  */
 export function adjustNav(urlStr) {
-  const parsed = applySessionFromUrl(urlStr)
-  const prefix = session.getProxyPrefix(parsed.origin, parsed.sessionId)
+  let origin = ''
+  try {
+    origin = new URL(urlStr).origin
+  } catch {
+    try {
+      origin = self.location.origin
+    } catch {
+      origin = ''
+    }
+  }
+  const prefix = getProxyPrefix(origin)
 
-  if (session.isViewerHomePath(parsed.restPath)) {
+  let pathname = '/'
+  try {
+    pathname = new URL(urlStr).pathname
+  } catch {
+    // ignore
+  }
+
+  // Viewer home paths
+  if (
+    pathname === '/' ||
+    pathname === '' ||
+    pathname === '/index.html' ||
+    pathname === '/viewer' ||
+    pathname === '/viewer.html'
+  ) {
     return
   }
 
-  const rawUrlStr = parsed.restPath.startsWith(PROXY_MARKER)
-    ? parsed.restPath.substr(PROXY_MARKER.length)
-    : parsed.restPath.replace(/^\/-+/, '')
+  // Strip legacy /s/<id>/ if present
+  const legacyShell = pathname.match(/^\/s\/[^/]+(\/.*)?$/)
+  const restPath = legacyShell ? (legacyShell[1] || '/') : pathname
+
+  if (
+    restPath === '/' ||
+    restPath === '' ||
+    restPath === '/index.html' ||
+    restPath === '/viewer' ||
+    restPath === '/viewer.html'
+  ) {
+    return
+  }
+
+  const rawUrlStr = restPath.startsWith(PROXY_MARKER)
+    ? restPath.substr(PROXY_MARKER.length)
+    : restPath.replace(/^\/-+/, '')
   const rawUrlObj = newUrl(rawUrlStr)
 
   if (rawUrlObj) {
@@ -405,22 +443,21 @@ export function adjustNav(urlStr) {
       return prefix + m[1]
     }
     if (isHttpProto(rawUrlObj.protocol) &&
-        prefix + rawUrlObj.href === urlStr
+        prefix + encodeProxyTarget(rawUrlObj.href) === urlStr
     ) {
       return
     }
   }
 
-  const part = parsed.restPath.replace(/^\/+/, '').replace(/^-+/, '')
+  const part = restPath.replace(/^\/+/, '').replace(/^-+/, '')
 
-  // Mis-encoded session shell paths must not become Google search queries.
   if (/^s\/[^/]+\/?$/.test(part)) {
     return
   }
 
   const ret = getAliasUrl(part) || padUrl(part)
   if (ret) {
-    return prefix + ret
+    return prefix + encodeProxyTarget(ret)
   }
 
   if (!part) {
@@ -428,5 +465,5 @@ export function adjustNav(urlStr) {
   }
 
   const keyword = part.replace(/&/g, '%26')
-  return prefix + DEFAULT_SEARCH.replace('%s', keyword)
+  return prefix + encodeProxyTarget(DEFAULT_SEARCH.replace('%s', keyword))
 }

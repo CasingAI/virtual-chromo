@@ -11,35 +11,39 @@ virtual-chromo 作为 iframe 嵌入外层「浏览器壳」项目，双方通过
 - 生产环境建议双方使用明确 origin，避免 `*`。
 - **父项目必须与 Worker 不同源**。若父页面与 Worker 在同一域名下，Service Worker 会接管整个站点，导致父页面本身也被代理。
 
-## Session（BrowserContext）
+## 浏览状态（单用户）
 
-每个 **session** 对应 Playwright 的 `BrowserContext`：独立 cookie / storage，同一 session 内多 tab **共享**登录态；关 tab **不**清状态，仅 `VC_SESSION_DESTROY` 清空。
+单 Chromo 实例：全局 cookie jar、按 siteOrigin 隔离的 storage、全局 DevTools hot cache（method+URL+TTL）。
 
 ### URL 约定
 
-- Viewer：`https://<worker>/s/<sessionId>/`
-- 代理页：`https://<worker>/s/<sessionId>/-----https://example.com/`
-- 无 `/s/` 前缀的 legacy 入口归入 `default` session（deprecated）
+- Viewer：`https://<worker>/viewer` 或 `/`
+- 代理页：`https://<worker>/-----https://example.com/`
+- 旧书签 `/s/<id>/-----…` 仍可解码，但新导航不再生成 `/s/`
 
-### 父 → iframe
+### `VC_CLEAR_STATE`
 
-| 命令 | payload | 说明 |
-|------|---------|------|
-| `VC_SESSION_CREATE` | `{ sessionId? }` | 可选指定 id；否则生成 UUID。iframe 导航到 `/s/<id>/`，并上报 `VC_SESSION_CREATED` |
-| `VC_SESSION_DESTROY` | `{ sessionId? }` | 默认销毁当前 iframe session；清空 SW 内该 session 全部状态 |
-| `VC_SESSION_LIST` | — | 调试：SW 返回活跃 session 列表（`VC_SESSION_LIST_RESULT`） |
+父 → iframe：清空全局 cookie + storage + hot/archive/url-cache。  
+iframe → 父：`VC_CLEAR_STATE_DONE`（**等 SW 完成后再回**；payload 可含 `id` / `ok`）。
 
-### iframe → 父
+### Application（存储管理，build `20260728-v14`+）
 
-| 事件 | payload |
-|------|---------|
-| `VC_READY` | `{ version, build, sessionId }` |
-| `VC_SESSION_CREATED` | `{ sessionId }` |
-| `VC_SESSION_DESTROYED` | `{ sessionId }` |
-| `VC_SESSION_GONE` | `{ sessionId }` — SW 销毁或 idle GC 后通知 |
-| `VC_SESSION_LIST_RESULT` | `{ sessions: [{ sessionId, clientCount, lastTouch }] }` |
+RPC 均带 `id`，结果为 `*_RESULT`：`{ id, ok, value? | error? }`。
 
-`VC_NAVIGATE` 等现有命令不变；session 由 iframe URL 决定，导航路径自动带 `/s/<sessionId>/-----`。
+| 命令 | 说明 |
+|------|------|
+| `VC_COOKIE_LIST` / `DELETE` / `CLEAR` | 全局 cookie jar（含 httpOnly）；DELETE 用 `{ cookieId }`；CLEAR 可选 `{ domain }` |
+| `VC_STORAGE_LIST` / `SET` / `REMOVE` / `CLEAR` | `{ type: 'local'\|'session' }`；读写当前页 content 的 Storage hook |
+| `VC_IDB_LIST` / `DELETE` / `STORES` / `GET_ALL` | 当前页 IndexedDB（浅表预览） |
+| `VC_SITE_CACHE_LIST` / `KEYS` / `DELETE` | 站点 Cache Storage（前缀隔离后的逻辑名） |
+| `VC_NETWORK_CACHE_STATS` / `LIST` / `CLEAR` | Chromo hot/archive；CLEAR `{ layer: 'hot'\|'archive'\|'all' }` |
+| `VC_SW_INFO` | Viewer 代理 SW 状态；`siteServiceWorkerBlocked: true`（站点 SW 注册被禁用） |
+
+### `VC_READY`
+
+payload：`{ version, build }`（**不再含 sessionId**）
+
+> **Breaking（build `20260728-v12`）**：`VC_SESSION_*`（`VC_SESSION_CREATE` / `DESTROY` / `LIST` 及对应事件）已移除。
 
 ## 父 → iframe（命令）
 
@@ -235,7 +239,7 @@ await vcRpc('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', {
 
 ### `VC_NETWORK_OPTIONS`
 
-配置 Network 缓存行为。`devtoolsId` 仅用于将 **Disable cache** 开关绑定到父页面 tab；热缓存本身按 **session** 持久共享。
+配置 Network 缓存行为。`devtoolsId` 仅用于将 **Disable cache** 开关绑定到父页面 tab；热缓存本身为**全局**（method + URL + Cache-Control TTL），不按 session 分区。
 
 ```javascript
 iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
@@ -245,10 +249,10 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 ```
 
 - `disableCache: true`：跳过热缓存，且 SW 出站 `fetch` 使用 `cache: 'no-store'`
-- `disableCache: false`：允许热缓存复用（按 `sessionId + method + url`，session 级持久，跨 reload）
-- 未传 `devtoolsId` 时 bridge 默认用 `sessionId`（`default` session 才 fallback 随机 id）并在 `VC_READY` 后注册到 SW
+- `disableCache: false`：允许热缓存复用（按 `method + url`，含 Cache-Control TTL；跨 reload 仍可命中未过期条目）
+- 未传 `devtoolsId` 时 bridge 使用随机 id，并在 `VC_READY` 后注册到 SW
 
-> **后续 TODO**（存储管理 API，对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS` / `VC_NETWORK_CACHE_CLEAR` / `VC_NETWORK_CACHE_LIST` — 查询 hot/archive 占用、按层清空、调试列出 hot key。当前清除仍走 `VC_SESSION_DESTROY` → `destroySessionCaches`。
+> Application 存储管理 API（build `20260728-v14`+）：见上文 `VC_COOKIE_*` / `VC_STORAGE_*` / `VC_IDB_*` / `VC_SITE_CACHE_*` / `VC_NETWORK_CACHE_*` / `VC_SW_INFO`。全局清除仍可用 `VC_CLEAR_STATE`。
 
 ### `VC_NETWORK_BODY_READ`
 
@@ -261,7 +265,7 @@ await vcRpc('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
 })
 ```
 
-成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有 session 总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。**图片等二进制预览**继续用本 API（`encoding: 'base64'`）；大文本预览请用下方 `VC_NETWORK_BODY_READ_LINES`。
+成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有全局总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。**图片等二进制预览**继续用本 API（`encoding: 'base64'`）；大文本预览请用下方 `VC_NETWORK_BODY_READ_LINES`。
 
 ### `VC_NETWORK_BODY_READ_LINES`
 
@@ -326,7 +330,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 **注意**：SW 更新、iframe 刷新时可能**再次**收到 `VC_READY`。父项目不应在每次 `VC_READY` 里自动 `VC_NAVIGATE`（否则会覆盖用户正在浏览的页面）。仅在首次就绪时导航，或完全由用户/业务逻辑决定首页 URL。
 
 ```javascript
-// ['VC_READY', { version: '1.3.0', build: '20260727-v17', sessionId: '…' }]
+// ['VC_READY', { version: '1.3.0', build: '20260728-v12' }]
 ```
 
 ### `VC_NAVIGATING`
@@ -608,10 +612,10 @@ viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_bu
 
 | 层 | Key | 用途 |
 |----|-----|------|
-| archive | `sessionId + entryId` | DevTools 回看，不可变 |
-| hot | `sessionId + method + url`（URL 经 `normalizeHotUrl`） | session 级可复用热缓存；`devtoolsId` 仅控制 Disable Cache 是否跳过 get/put |
+| archive | `entryId` | DevTools 回看，不可变 |
+| hot | `method + url`（URL 经 `normalizeHotUrl`）+ Cache-Control TTL | 全局可复用热缓存；`devtoolsId` 仅控制 Disable Cache 是否跳过 get/put |
 
-首次满足写入条件的 GET 会 **putHot 但不命中**；同 session 内再次请求同 URL 才 `fromCache` / `source: cache`。Redirect 链用**原始请求 URL** 作为 hot key，不随 301/302 landing URL 分裂。`hotStored` 字段表示本次是否成功写入热缓存。`VC_SESSION_DESTROY` 清空该 session 的 archive + hot。
+仅当无**未过期** hot 条目时 miss；有 fresh 条目才 `fromCache` / `source: cache`。Redirect 链用**原始请求 URL** 作为 hot key，不随 301/302 landing URL 分裂。`hotStored` 字段表示本次是否成功写入热缓存。清空用 `VC_CLEAR_STATE`（全局 cookie / storage / hot / archive / url-cache）；**不再**有 destroy session 清 hot。
 
 ### `VC_NETWORK_HOT_PROBE` / `VC_NETWORK_HOT_PROBE_RESULT`
 
@@ -623,7 +627,7 @@ await vcRpc('VC_NETWORK_HOT_PROBE_RESULT', 'VC_NETWORK_HOT_PROBE', {
   method: 'GET',
   url: 'https://example.com/a.js',
 })
-// value: { exists: true|false }
+// value: { exists: true|false, fresh: true|false, expiresAt?: number }
 ```
 
 **DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。
@@ -759,7 +763,7 @@ function vcScreenshot(iframe, options = {}, { timeout = 60_000, targetOrigin = '
 
 ## 推荐接入流程
 
-1. 父页面嵌入 `<iframe src="https://your-worker.workers.dev/viewer.html">`
+1. 父页面嵌入 `<iframe src="https://your-worker.workers.dev/viewer">`
 2. 监听 `message`，等待 `VC_READY`（标记 bridge 可接收命令）
 3. 由用户操作或业务逻辑发送 `VC_NAVIGATE`（不要在每次 `VC_READY` 里硬编码首页）
 4. 监听页面生命周期：`VC_NAVIGATING` / `VC_LOADING` / `VC_NAVIGATED` / `VC_LOAD_FAILED`
@@ -774,7 +778,7 @@ function vcScreenshot(iframe, options = {}, { timeout = 60_000, targetOrigin = '
 ```html
 <iframe
   id="chromo"
-  src="https://your-worker.workers.dev/viewer.html"
+  src="https://your-worker.workers.dev/viewer"
   sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
   style="width:100%;height:100%;border:none"
 ></iframe>

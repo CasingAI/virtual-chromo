@@ -5,96 +5,47 @@ const TIP_MAX = 200
 const STACK_MAX_FRAMES = 20
 const CHAIN_MAX_HOPS = 8
 
-/** @type {Map<string, Map<string, object>>} sessionId → tipId → tip */
-const tipsBySession = new Map()
+/** @type {Map<string, object>} tipId → tip */
+const tips = new Map()
 
-/** @type {Map<string, Map<string, string>>} sessionId → tipId order (LRU) via insertion */
-const tipOrderBySession = new Map()
+/** @type {Map<string, string>} resourceUrl → referrer */
+const referrerMap = new Map()
 
-/** @type {Map<string, Map<string, string>>} sessionId → resourceUrl → referrer */
-const referrerBySession = new Map()
-
-/** @type {Map<string, Map<string, string>>} sessionId → resourceUrl → latest tipId */
+/** @type {Map<string, string>} resourceUrl → latest tipId */
 const tipIdByUrl = new Map()
 
 /**
- * @param {string} sessionId
- * @returns {Map<string, object>}
+ * @param {Map<string, object>} tipMap
  */
-function tipsMap(sessionId) {
-  const sid = sessionId || 'default'
-  let m = tipsBySession.get(sid)
-  if (!m) {
-    m = new Map()
-    tipsBySession.set(sid, m)
-  }
-  return m
-}
-
-/**
- * @param {string} sessionId
- * @returns {Map<string, string>}
- */
-function referrerMap(sessionId) {
-  const sid = sessionId || 'default'
-  let m = referrerBySession.get(sid)
-  if (!m) {
-    m = new Map()
-    referrerBySession.set(sid, m)
-  }
-  return m
-}
-
-/**
- * @param {string} sessionId
- * @returns {Map<string, string>}
- */
-function urlTipMap(sessionId) {
-  const sid = sessionId || 'default'
-  let m = tipIdByUrl.get(sid)
-  if (!m) {
-    m = new Map()
-    tipIdByUrl.set(sid, m)
-  }
-  return m
-}
-
-/**
- * @param {string} sessionId
- * @param {Map<string, object>} tips
- */
-function evictIfNeeded(sessionId, tips) {
-  while (tips.size > TIP_MAX) {
-    const oldest = tips.keys().next().value
+function evictIfNeeded(tipMap) {
+  while (tipMap.size > TIP_MAX) {
+    const oldest = tipMap.keys().next().value
     if (oldest === undefined) {
       break
     }
-    const old = tips.get(oldest)
-    tips.delete(oldest)
+    const old = tipMap.get(oldest)
+    tipMap.delete(oldest)
     if (old && typeof old.url === 'string') {
-      const byUrl = urlTipMap(sessionId)
-      if (byUrl.get(old.url) === oldest) {
-        byUrl.delete(old.url)
+      if (tipIdByUrl.get(old.url) === oldest) {
+        tipIdByUrl.delete(old.url)
       }
     }
   }
 }
 
 /**
- * Drop expired tips for a session.
- * @param {string} sessionId
- * @param {Map<string, object>} tips
+ * Drop expired tips.
+ * @param {Map<string, object>} tipMap
  */
-function purgeExpired(sessionId, tips) {
+function purgeExpired(tipMap) {
   const now = Date.now()
-  for (const [id, tip] of tips) {
+  for (const [id, tip] of tipMap) {
     const ts = tip && typeof tip.ts === 'number' ? tip.ts : 0
     if (now - ts > TIP_TTL_MS) {
-      tips.delete(id)
+      tipMap.delete(id)
       if (tip && typeof tip.url === 'string') {
-        const byUrl = urlTipMap(sessionId)
-        if (byUrl.get(tip.url) === id) {
-          byUrl.delete(tip.url)
+        if (tipIdByUrl.get(tip.url) === id) {
+          tipIdByUrl.delete(tip.url)
         }
       }
     }
@@ -102,10 +53,9 @@ function purgeExpired(sessionId, tips) {
 }
 
 /**
- * @param {string} sessionId
  * @param {object} tip
  */
-export function registerTip(sessionId, tip) {
+export function registerTip(tip) {
   if (!tip || typeof tip !== 'object') {
     return
   }
@@ -113,8 +63,7 @@ export function registerTip(sessionId, tip) {
   if (!id) {
     return
   }
-  const tips = tipsMap(sessionId)
-  purgeExpired(sessionId, tips)
+  purgeExpired(tips)
   const entry = {
     id,
     kind: typeof tip.kind === 'string' ? tip.kind : 'other',
@@ -130,31 +79,28 @@ export function registerTip(sessionId, tip) {
   }
   tips.set(id, entry)
   if (entry.url) {
-    urlTipMap(sessionId).set(entry.url, id)
+    tipIdByUrl.set(entry.url, id)
   }
-  evictIfNeeded(sessionId, tips)
+  evictIfNeeded(tips)
 }
 
 /**
- * @param {string} sessionId
  * @param {string} tipId
  * @returns {object|null}
  */
-export function consumeTip(sessionId, tipId) {
+export function consumeTip(tipId) {
   if (!tipId) {
     return null
   }
-  const tips = tipsMap(sessionId)
-  purgeExpired(sessionId, tips)
+  purgeExpired(tips)
   const tip = tips.get(tipId)
   if (!tip) {
     return null
   }
   tips.delete(tipId)
   if (tip.url) {
-    const byUrl = urlTipMap(sessionId)
-    if (byUrl.get(tip.url) === tipId) {
-      byUrl.delete(tip.url)
+    if (tipIdByUrl.get(tip.url) === tipId) {
+      tipIdByUrl.delete(tip.url)
     }
   }
   return tip
@@ -162,32 +108,30 @@ export function consumeTip(sessionId, tipId) {
 
 /**
  * Fallback when no X-VC-Initiator-Id header (e.g. dynamic import()).
- * @param {string} sessionId
  * @param {string} url
  * @returns {object|null}
  */
-export function consumeTipByUrl(sessionId, url) {
+export function consumeTipByUrl(url) {
   if (!url) {
     return null
   }
-  const tipId = urlTipMap(sessionId).get(url)
+  const tipId = tipIdByUrl.get(url)
   if (!tipId) {
     return null
   }
-  return consumeTip(sessionId, tipId)
+  return consumeTip(tipId)
 }
 
 /**
  * Remember referrer for a resource URL so Parser chains can walk upward.
- * @param {string} sessionId
  * @param {string} url
  * @param {string} referrer
  */
-export function rememberReferrer(sessionId, url, referrer) {
+export function rememberReferrer(url, referrer) {
   if (!url || !referrer || referrer === 'about:client' || referrer === url) {
     return
   }
-  referrerMap(sessionId).set(url, referrer)
+  referrerMap.set(url, referrer)
 }
 
 /**
@@ -272,8 +216,6 @@ export function buildReferrerChain(opts) {
   const pageUrl = opts && opts.pageUrl ? opts.pageUrl : ''
   const referrer = opts && opts.referrer && opts.referrer !== 'about:client' ? opts.referrer : ''
   const scriptUrl = opts && opts.scriptUrl ? opts.scriptUrl : ''
-  const sessionId = opts && typeof opts.sessionId === 'string' ? opts.sessionId : ''
-  const map = sessionId ? referrerMap(sessionId) : null
 
   /** @type {string[]} */
   const hops = []
@@ -281,7 +223,7 @@ export function buildReferrerChain(opts) {
   let guard = 0
   while (cur && guard < CHAIN_MAX_HOPS) {
     hops.unshift(cur)
-    const next = map ? map.get(cur) : ''
+    const next = referrerMap.get(cur)
     if (!next || next === cur || hops.indexOf(next) >= 0) {
       break
     }
@@ -309,7 +251,6 @@ export function buildReferrerChain(opts) {
 /**
  * Resolve initiator meta for a network record.
  * @param {{
- *   sessionId: string,
  *   tipId?: string,
  *   url: string,
  *   referrer?: string,
@@ -318,15 +259,14 @@ export function buildReferrerChain(opts) {
  * }} opts
  */
 export function resolveInitiator(opts) {
-  const sessionId = opts.sessionId || 'default'
   const tipId = opts.tipId || ''
-  let tip = tipId ? consumeTip(sessionId, tipId) : null
+  let tip = tipId ? consumeTip(tipId) : null
   if (!tip) {
-    tip = consumeTipByUrl(sessionId, opts.url)
+    tip = consumeTipByUrl(opts.url)
   }
 
   const referrer = opts.referrer || ''
-  rememberReferrer(sessionId, opts.url, referrer)
+  rememberReferrer(opts.url, referrer)
 
   if (tip) {
     const scriptUrl = tip.scriptUrl || inferScriptUrl(tip.stack) || ''
@@ -335,7 +275,6 @@ export function resolveInitiator(opts) {
       referrer,
       pageUrl: opts.pageUrl || '',
       scriptUrl,
-      sessionId,
     })
     return {
       initiatorKind: tip.kind || 'other',
@@ -356,7 +295,6 @@ export function resolveInitiator(opts) {
       url: opts.url,
       referrer,
       pageUrl: opts.pageUrl || '',
-      sessionId,
     }),
     initiatorStack: [],
     initiatorScriptUrl: undefined,

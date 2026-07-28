@@ -7,11 +7,8 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v11'
+  const BUILD = '20260728-v14'
   const PROXY_PREFIX = '/-----'
-  const MSG_BRIDGE_DESTROY = 302
-  const MSG_SESSION_LIST = 303
-  const MSG_SW_SESSION_LIST = 304
   const MSG_SW_NETWORK_PUSH = 305
   const MSG_PAGE_NETWORK_OPTS = 306
   const MSG_PAGE_NETWORK_BODY_READ = 307
@@ -24,6 +21,20 @@
   const MSG_PAGE_NETWORK_INITIATOR_TIP = 314
   const MSG_PAGE_NETWORK_BODY_READ_LINES = 315
   const MSG_SW_NETWORK_BODY_LINES_REPLY = 316
+  const MSG_PAGE_CLEAR_STATE = 320
+  const MSG_SW_CLEAR_STATE = 321
+  const MSG_PAGE_COOKIE_LIST = 322
+  const MSG_SW_COOKIE_LIST_REPLY = 323
+  const MSG_PAGE_COOKIE_DELETE = 324
+  const MSG_SW_COOKIE_DELETE_REPLY = 325
+  const MSG_PAGE_COOKIE_CLEAR = 326
+  const MSG_SW_COOKIE_CLEAR_REPLY = 327
+  const MSG_PAGE_NETWORK_CACHE_STATS = 328
+  const MSG_SW_NETWORK_CACHE_STATS_REPLY = 329
+  const MSG_PAGE_NETWORK_CACHE_LIST = 330
+  const MSG_SW_NETWORK_CACHE_LIST_REPLY = 331
+  const MSG_PAGE_NETWORK_CACHE_CLEAR = 332
+  const MSG_SW_NETWORK_CACHE_CLEAR_REPLY = 333
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -641,84 +652,142 @@
   // Bridge
   // ---------------------------------------------------------------------------
 
-  /** @type {string} */
-  let sessionId = parseSessionIdFromLocation()
-
   /**
-   * @returns {string}
+   * Clear SW-side state (and local network buffer). Payload: {} or { id? }.
+   * Waits for SW_CLEAR_STATE before VC_CLEAR_STATE_DONE.
+   * @param {unknown} [payload]
    */
-  function parseSessionIdFromLocation() {
-    const m = location.pathname.match(/^\/s\/([^/]+)/)
-    return m ? m[1] : 'default'
-  }
-
-  /**
-   * @param {string} id
-   */
-  function destroySessionViaSw(id) {
-    const sid = id || sessionId
-    navigator.serviceWorker.ready.then(function () {
-      const ctl = navigator.serviceWorker.controller
-      if (ctl) {
-        ctl.postMessage([MSG_BRIDGE_DESTROY, { sessionId: sid }])
-      }
-    })
-  }
-
-  /**
-   * @param {unknown} payload
-   */
-  function createSession(payload) {
-    const req = payload && typeof payload === 'object' ? payload : {}
-    let id = typeof req.sessionId === 'string' && req.sessionId.trim()
-      ? req.sessionId.trim()
-      : null
-    if (!id) {
-      id = typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : 's' + Date.now().toString(36)
-    }
-    if (!/^[\w-]{1,128}$/.test(id)) {
-      emitError('invalid sessionId', 'SESSION_BAD_ID')
-      return
-    }
-    postToParent('VC_SESSION_CREATED', { sessionId: id })
-    if (id !== sessionId) {
-      location.href = '/s/' + encodeURIComponent(id) + '/'
-    }
-  }
-
-  /**
-   * @param {unknown} payload
-   */
-  function destroySession(payload) {
-    const req = payload && typeof payload === 'object' ? payload : {}
-    const id = typeof req.sessionId === 'string' && req.sessionId
-      ? req.sessionId
-      : sessionId
-    destroySessionViaSw(id)
+  function clearStateViaSw(payload) {
     networkBuffer.length = 0
     networkPendingNotifyCount = 0
-    postToParent('VC_SESSION_DESTROYED', { sessionId: id })
-  }
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const reqId =
+      typeof data.id === 'string' && data.id ? data.id : 'clear-' + Date.now()
+    /** @type {Record<string, unknown>} */
+    const msg = { id: reqId }
 
-  function listSessions() {
+    let settled = false
+    function done(ok, error) {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      navigator.serviceWorker.removeEventListener('message', onReply)
+      postToParent('VC_CLEAR_STATE_DONE', ok === false
+        ? { id: reqId, ok: false, error: error || { message: 'clear failed' } }
+        : { id: reqId, ok: true })
+    }
+
+    /**
+     * @param {MessageEvent} event
+     */
+    function onReply(event) {
+      if (!Array.isArray(event.data) || event.data[0] !== MSG_SW_CLEAR_STATE) {
+        return
+      }
+      const p = event.data[1] && typeof event.data[1] === 'object' ? event.data[1] : {}
+      // Accept broadcast {} or targeted { done, id }
+      if (p.id && p.id !== reqId && p.done !== true && Object.keys(p).length > 0) {
+        // unrelated
+      }
+      if (p.ok === false) {
+        done(false, p.error || { message: String(p.error || 'clear failed') })
+        return
+      }
+      done(true)
+    }
+
+    const timer = setTimeout(function () {
+      done(false, { message: 'VC_CLEAR_STATE timed out', code: 'CLEAR_TIMEOUT' })
+    }, 15000)
+
+    navigator.serviceWorker.addEventListener('message', onReply)
     navigator.serviceWorker.ready.then(function () {
       const ctl = navigator.serviceWorker.controller
       if (!ctl) {
-        postToParent('VC_SESSION_LIST_RESULT', { sessions: [{ sessionId, clientCount: 1 }] })
+        done(false, { message: 'service worker not ready', code: 'NO_SW' })
         return
       }
-      function onList(event) {
-        if (!Array.isArray(event.data) || event.data[0] !== MSG_SW_SESSION_LIST) {
+      ctl.postMessage([MSG_PAGE_CLEAR_STATE, msg])
+    })
+  }
+
+  /** @type {Map<string, (payload: object) => void>} */
+  const swAppWaiters = new Map()
+
+  /**
+   * @param {number} replyCmd
+   * @param {number} pageCmd
+   * @param {Record<string, unknown>} payload
+   * @param {string} resultCmd
+   * @param {number} [timeoutMs]
+   */
+  function swAppRpc(replyCmd, pageCmd, payload, resultCmd, timeoutMs) {
+    const id = typeof payload.id === 'string' ? payload.id : ''
+    function replyError(message, code) {
+      if (id) {
+        swAppWaiters.delete(id)
+      }
+      postToParent(resultCmd, {
+        id: id,
+        ok: false,
+        error: { message: message, code: code },
+      })
+    }
+    if (!id) {
+      emitError(resultCmd + ' requires payload.id', 'APP_BAD_REQUEST')
+      return
+    }
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        replyError('service worker not ready', 'NO_SW')
+        return
+      }
+      const timeoutId = setTimeout(function () {
+        if (!swAppWaiters.has(id)) {
           return
         }
-        navigator.serviceWorker.removeEventListener('message', onList)
-        postToParent('VC_SESSION_LIST_RESULT', { sessions: event.data[1] })
-      }
-      navigator.serviceWorker.addEventListener('message', onList)
-      ctl.postMessage([MSG_SESSION_LIST])
+        swAppWaiters.delete(id)
+        replyError(resultCmd + ' timed out', 'APP_TIMEOUT')
+      }, timeoutMs || 15000)
+      swAppWaiters.set(id, function (swPayload) {
+        clearTimeout(timeoutId)
+        swAppWaiters.delete(id)
+        const swData = swPayload && typeof swPayload === 'object' ? swPayload : {}
+        if (!swData.ok) {
+          postToParent(resultCmd, {
+            id: id,
+            ok: false,
+            error: swData.error || { message: 'failed', code: 'APP_FAILED' },
+          })
+          return
+        }
+        postToParent(resultCmd, {
+          id: id,
+          ok: true,
+          value: swData.value,
+        })
+      })
+      ctl.postMessage([pageCmd, payload])
     })
+  }
+
+  /**
+   * @param {number} replyCmd
+   * @param {object} payload
+   */
+  function settleSwAppWaiter(replyCmd, payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    if (!id || !swAppWaiters.has(id)) {
+      return
+    }
+    const resolve = swAppWaiters.get(id)
+    if (typeof resolve === 'function') {
+      resolve(data)
+    }
   }
 
   /** @type {string[]|null} */
@@ -862,7 +931,6 @@
     return {
       version: VERSION,
       build: BUILD,
-      sessionId,
       swReady,
       fatal,
       loading,
@@ -1078,8 +1146,6 @@
     })
   }
 
-  const MSG_SW_SESSION_DESTROY = 300
-
   /**
    * @param {MessageEvent} event
    */
@@ -1088,9 +1154,6 @@
       return
     }
     const [cmd, payload] = event.data
-    if (cmd === MSG_SW_SESSION_DESTROY && payload && payload.sessionId) {
-      postToParent('VC_SESSION_GONE', { sessionId: payload.sessionId })
-    }
     if (cmd === MSG_SW_NETWORK_PUSH && payload && typeof payload === 'object') {
       appendNetworkEntry(payload)
     }
@@ -1102,6 +1165,24 @@
     }
     if (cmd === MSG_SW_NETWORK_HOT_PROBE_REPLY && payload && typeof payload === 'object') {
       handleNetworkHotProbeReply(payload)
+    }
+    if (cmd === MSG_SW_COOKIE_LIST_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_COOKIE_LIST_REPLY, payload)
+    }
+    if (cmd === MSG_SW_COOKIE_DELETE_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_COOKIE_DELETE_REPLY, payload)
+    }
+    if (cmd === MSG_SW_COOKIE_CLEAR_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_COOKIE_CLEAR_REPLY, payload)
+    }
+    if (cmd === MSG_SW_NETWORK_CACHE_STATS_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_NETWORK_CACHE_STATS_REPLY, payload)
+    }
+    if (cmd === MSG_SW_NETWORK_CACHE_LIST_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_NETWORK_CACHE_LIST_REPLY, payload)
+    }
+    if (cmd === MSG_SW_NETWORK_CACHE_CLEAR_REPLY && payload && typeof payload === 'object') {
+      settleSwAppWaiter(MSG_SW_NETWORK_CACHE_CLEAR_REPLY, payload)
     }
   }
 
@@ -1126,7 +1207,16 @@
     if (fatal && cmd !== 'VC_PING' && cmd !== 'VC_RELOAD') {
       if (cmd === 'VC_EVAL' || cmd === 'VC_CONSOLE_READ' || cmd === 'VC_NETWORK_READ' ||
           cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_NETWORK_BODY_READ_LINES' ||
-          cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT') {
+          cmd === 'VC_NETWORK_HOT_PROBE' || cmd === 'VC_SCREENSHOT' ||
+          cmd === 'VC_COOKIE_LIST' || cmd === 'VC_COOKIE_DELETE' || cmd === 'VC_COOKIE_CLEAR' ||
+          cmd === 'VC_STORAGE_LIST' || cmd === 'VC_STORAGE_SET' || cmd === 'VC_STORAGE_REMOVE' ||
+          cmd === 'VC_STORAGE_CLEAR' || cmd === 'VC_SW_INFO' ||
+          cmd === 'VC_NETWORK_CACHE_STATS' || cmd === 'VC_NETWORK_CACHE_LIST' ||
+          cmd === 'VC_NETWORK_CACHE_CLEAR' ||
+          cmd === 'VC_IDB_LIST' || cmd === 'VC_IDB_DELETE' || cmd === 'VC_IDB_STORES' ||
+          cmd === 'VC_IDB_GET_ALL' ||
+          cmd === 'VC_SITE_CACHE_LIST' || cmd === 'VC_SITE_CACHE_KEYS' ||
+          cmd === 'VC_SITE_CACHE_DELETE' || cmd === 'VC_CLEAR_STATE') {
         const data = payload && typeof payload === 'object' ? payload : {}
         const id = typeof data.id === 'string' ? data.id : ''
         const resultCmd =
@@ -1136,7 +1226,8 @@
                 : cmd === 'VC_NETWORK_BODY_READ' ? 'VC_NETWORK_BODY_READ_RESULT'
                   : cmd === 'VC_NETWORK_BODY_READ_LINES' ? 'VC_NETWORK_BODY_READ_LINES_RESULT'
                     : cmd === 'VC_NETWORK_HOT_PROBE' ? 'VC_NETWORK_HOT_PROBE_RESULT'
-                      : 'VC_SCREENSHOT_RESULT'
+                      : cmd === 'VC_CLEAR_STATE' ? 'VC_CLEAR_STATE_DONE'
+                        : cmd + '_RESULT'
         if (id) {
           postToParent(resultCmd, {
             id: id,
@@ -1193,14 +1284,62 @@
       case 'VC_NETWORK_HOT_PROBE':
         probeNetworkHot(payload)
         break
-      case 'VC_SESSION_CREATE':
-        createSession(payload)
+      case 'VC_CLEAR_STATE':
+        clearStateViaSw(payload)
         break
-      case 'VC_SESSION_DESTROY':
-        destroySession(payload)
+      case 'VC_COOKIE_LIST':
+        swAppRpc(MSG_SW_COOKIE_LIST_REPLY, MSG_PAGE_COOKIE_LIST, payload && typeof payload === 'object' ? payload : {}, 'VC_COOKIE_LIST_RESULT')
         break
-      case 'VC_SESSION_LIST':
-        listSessions()
+      case 'VC_COOKIE_DELETE':
+        swAppRpc(MSG_SW_COOKIE_DELETE_REPLY, MSG_PAGE_COOKIE_DELETE, payload && typeof payload === 'object' ? payload : {}, 'VC_COOKIE_DELETE_RESULT')
+        break
+      case 'VC_COOKIE_CLEAR':
+        swAppRpc(MSG_SW_COOKIE_CLEAR_REPLY, MSG_PAGE_COOKIE_CLEAR, payload && typeof payload === 'object' ? payload : {}, 'VC_COOKIE_CLEAR_RESULT')
+        break
+      case 'VC_NETWORK_CACHE_STATS':
+        swAppRpc(MSG_SW_NETWORK_CACHE_STATS_REPLY, MSG_PAGE_NETWORK_CACHE_STATS, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_STATS_RESULT')
+        break
+      case 'VC_NETWORK_CACHE_LIST':
+        swAppRpc(MSG_SW_NETWORK_CACHE_LIST_REPLY, MSG_PAGE_NETWORK_CACHE_LIST, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_LIST_RESULT')
+        break
+      case 'VC_NETWORK_CACHE_CLEAR':
+        swAppRpc(MSG_SW_NETWORK_CACHE_CLEAR_REPLY, MSG_PAGE_NETWORK_CACHE_CLEAR, payload && typeof payload === 'object' ? payload : {}, 'VC_NETWORK_CACHE_CLEAR_RESULT')
+        break
+      case 'VC_STORAGE_LIST':
+        handleStorageList(payload)
+        break
+      case 'VC_STORAGE_SET':
+        handleStorageSet(payload)
+        break
+      case 'VC_STORAGE_REMOVE':
+        handleStorageRemove(payload)
+        break
+      case 'VC_STORAGE_CLEAR':
+        handleStorageClear(payload)
+        break
+      case 'VC_SW_INFO':
+        handleSwInfo(payload)
+        break
+      case 'VC_IDB_LIST':
+        handleIdbList(payload)
+        break
+      case 'VC_IDB_DELETE':
+        handleIdbDelete(payload)
+        break
+      case 'VC_IDB_STORES':
+        handleIdbStores(payload)
+        break
+      case 'VC_IDB_GET_ALL':
+        handleIdbGetAll(payload)
+        break
+      case 'VC_SITE_CACHE_LIST':
+        handleSiteCacheList(payload)
+        break
+      case 'VC_SITE_CACHE_KEYS':
+        handleSiteCacheKeys(payload)
+        break
+      case 'VC_SITE_CACHE_DELETE':
+        handleSiteCacheDelete(payload)
         break
       default:
         break
@@ -2463,12 +2602,6 @@
     if (networkDevtoolsId) {
       return networkDevtoolsId
     }
-    // Align with instant-app: hot-cache key uses sessionId as devtoolsId.
-    // Avoid random UUID before VC_NETWORK_OPTIONS arrives (race → never hit).
-    if (sessionId && sessionId !== 'default') {
-      networkDevtoolsId = sessionId
-      return networkDevtoolsId
-    }
     try {
       if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
         networkDevtoolsId = crypto.randomUUID()
@@ -2493,7 +2626,6 @@
         {
           devtoolsId: devtoolsId,
           disableCache: networkDisableCache,
-          sessionId: sessionId,
         },
       ])
     })
@@ -2634,7 +2766,6 @@
         {
           id: id,
           entryId: entryId,
-          sessionId: sessionId,
         },
       ])
     })
@@ -2736,7 +2867,6 @@
       const msg = {
         id: id,
         entryId: entryId,
-        sessionId: sessionId,
       }
       if (typeof fromLine === 'number') {
         msg.fromLine = fromLine
@@ -2827,7 +2957,11 @@
         postToParent('VC_NETWORK_HOT_PROBE_RESULT', {
           id: id,
           ok: true,
-          value: { exists: !!value.exists },
+          value: {
+            exists: !!value.exists,
+            fresh: value.fresh !== undefined ? !!value.fresh : !!value.exists,
+            expiresAt: typeof value.expiresAt === 'number' ? value.expiresAt : undefined,
+          },
         })
       })
 
@@ -2837,9 +2971,418 @@
           id: id,
           method: method,
           url: url,
-          sessionId: sessionId,
         },
       ])
+    })
+  }
+
+  /**
+   * @returns {{ win: Window, origin: string } | { error: string, code: string }}
+   */
+  function requireContentWin() {
+    if (!contentFrame) {
+      return { error: 'content iframe not found', code: 'NO_FRAME' }
+    }
+    try {
+      const win = contentFrame.contentWindow
+      if (!win) {
+        return { error: 'content window unavailable', code: 'NO_WINDOW' }
+      }
+      void win.document
+      let origin = ''
+      try {
+        origin = win.location.origin || ''
+      } catch (_) {
+        origin = ''
+      }
+      if (!origin || origin === 'null') {
+        const state = readContentState()
+        if (state.url) {
+          try {
+            origin = new URL(state.url).origin
+          } catch (_) {
+            // ignore
+          }
+        }
+      }
+      return { win: win, origin: origin }
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : 'cannot access content window',
+        code: 'ACCESS_DENIED',
+      }
+    }
+  }
+
+  /**
+   * @param {string} resultCmd
+   * @param {unknown} payload
+   * @param {(ctx: { win: Window, origin: string, data: Record<string, unknown>, id: string }) => unknown | Promise<unknown>} fn
+   */
+  function withContentRpc(resultCmd, payload, fn) {
+    const data = payload && typeof payload === 'object' ? /** @type {Record<string, unknown>} */ (payload) : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    function replyError(message, code) {
+      postToParent(resultCmd, { id: id, ok: false, error: { message: message, code: code } })
+    }
+    if (!id) {
+      emitError(resultCmd + ' requires payload.id', 'APP_BAD_REQUEST')
+      return
+    }
+    const ctx = requireContentWin()
+    if ('error' in ctx) {
+      replyError(ctx.error, ctx.code)
+      return
+    }
+    Promise.resolve()
+      .then(function () {
+        return fn({ win: ctx.win, origin: ctx.origin, data: data, id: id })
+      })
+      .then(function (value) {
+        postToParent(resultCmd, { id: id, ok: true, value: value })
+      })
+      .catch(function (err) {
+        replyError(err instanceof Error ? err.message : String(err), 'APP_RUNTIME')
+      })
+  }
+
+  /** @param {unknown} payload */
+  function handleStorageList(payload) {
+    withContentRpc('VC_STORAGE_LIST_RESULT', payload, function (ctx) {
+      const type = ctx.data.type === 'session' ? 'session' : 'local'
+      const store = type === 'session' ? ctx.win.sessionStorage : ctx.win.localStorage
+      /** @type {{ key: string, value: string }[]} */
+      const entries = []
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i)
+        if (key == null) {
+          continue
+        }
+        entries.push({ key: key, value: store.getItem(key) || '' })
+      }
+      return { type: type, origin: ctx.origin, entries: entries }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleStorageSet(payload) {
+    withContentRpc('VC_STORAGE_SET_RESULT', payload, function (ctx) {
+      const type = ctx.data.type === 'session' ? 'session' : 'local'
+      const key = typeof ctx.data.key === 'string' ? ctx.data.key : ''
+      const value = ctx.data.value == null ? '' : String(ctx.data.value)
+      if (!key) {
+        throw Object.assign(new Error('key required'), { code: 'BAD_KEY' })
+      }
+      const store = type === 'session' ? ctx.win.sessionStorage : ctx.win.localStorage
+      store.setItem(key, value)
+      return { type: type, key: key }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleStorageRemove(payload) {
+    withContentRpc('VC_STORAGE_REMOVE_RESULT', payload, function (ctx) {
+      const type = ctx.data.type === 'session' ? 'session' : 'local'
+      const key = typeof ctx.data.key === 'string' ? ctx.data.key : ''
+      if (!key) {
+        throw Object.assign(new Error('key required'), { code: 'BAD_KEY' })
+      }
+      const store = type === 'session' ? ctx.win.sessionStorage : ctx.win.localStorage
+      store.removeItem(key)
+      return { type: type, key: key }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleStorageClear(payload) {
+    withContentRpc('VC_STORAGE_CLEAR_RESULT', payload, function (ctx) {
+      const type = ctx.data.type === 'session' ? 'session' : 'local'
+      const store = type === 'session' ? ctx.win.sessionStorage : ctx.win.localStorage
+      store.clear()
+      return { type: type, origin: ctx.origin }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleSwInfo(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    if (!id) {
+      emitError('VC_SW_INFO requires payload.id', 'APP_BAD_REQUEST')
+      return
+    }
+    const ctl = navigator.serviceWorker.controller
+    const scriptURL = ctl && ctl.scriptURL ? ctl.scriptURL : ''
+    const state = ctl && ctl.state ? ctl.state : 'none'
+    postToParent('VC_SW_INFO_RESULT', {
+      id: id,
+      ok: true,
+      value: {
+        scriptURL: scriptURL,
+        state: state,
+        build: BUILD,
+        version: VERSION,
+        controlled: !!ctl,
+        siteServiceWorkerBlocked: true,
+      },
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleIdbList(payload) {
+    withContentRpc('VC_IDB_LIST_RESULT', payload, async function (ctx) {
+      if (!ctx.win.indexedDB || typeof ctx.win.indexedDB.databases !== 'function') {
+        return { databases: [] }
+      }
+      const dbs = await ctx.win.indexedDB.databases()
+      return {
+        databases: (dbs || []).map(function (d) {
+          return { name: d.name || '', version: d.version || 0 }
+        }),
+      }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleIdbDelete(payload) {
+    withContentRpc('VC_IDB_DELETE_RESULT', payload, function (ctx) {
+      const name = typeof ctx.data.name === 'string' ? ctx.data.name : ''
+      if (!name) {
+        throw Object.assign(new Error('name required'), { code: 'BAD_NAME' })
+      }
+      return new Promise(function (resolve, reject) {
+        const req = ctx.win.indexedDB.deleteDatabase(name)
+        req.onsuccess = function () {
+          resolve({ name: name })
+        }
+        req.onerror = function () {
+          reject(req.error || new Error('deleteDatabase failed'))
+        }
+        req.onblocked = function () {
+          resolve({ name: name, blocked: true })
+        }
+      })
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleIdbStores(payload) {
+    withContentRpc('VC_IDB_STORES_RESULT', payload, function (ctx) {
+      const name = typeof ctx.data.name === 'string' ? ctx.data.name : ''
+      if (!name) {
+        throw Object.assign(new Error('name required'), { code: 'BAD_NAME' })
+      }
+      return new Promise(function (resolve, reject) {
+        const req = ctx.win.indexedDB.open(name)
+        req.onerror = function () {
+          reject(req.error || new Error('open failed'))
+        }
+        req.onsuccess = function () {
+          const db = req.result
+          try {
+            const names = [...db.objectStoreNames]
+            if (names.length === 0) {
+              db.close()
+              resolve({ name: name, version: db.version, stores: [] })
+              return
+            }
+            const tx = db.transaction(names, 'readonly')
+            /** @type {{ name: string, count: number }[]} */
+            const stores = []
+            let pending = names.length
+            names.forEach(function (storeName) {
+              const store = tx.objectStore(storeName)
+              const countReq = store.count()
+              countReq.onsuccess = function () {
+                stores.push({ name: storeName, count: countReq.result | 0 })
+                pending -= 1
+                if (pending === 0) {
+                  db.close()
+                  resolve({ name: name, version: db.version, stores: stores })
+                }
+              }
+              countReq.onerror = function () {
+                stores.push({ name: storeName, count: -1 })
+                pending -= 1
+                if (pending === 0) {
+                  db.close()
+                  resolve({ name: name, version: db.version, stores: stores })
+                }
+              }
+            })
+          } catch (err) {
+            try {
+              db.close()
+            } catch (_) {}
+            reject(err)
+          }
+        }
+      })
+    })
+  }
+
+  /**
+   * @param {unknown} value
+   * @param {number} [maxLen]
+   */
+  function serializeIdbValue(value, maxLen) {
+    const limit = maxLen || 8000
+    try {
+      if (value === undefined) {
+        return { type: 'undefined', preview: 'undefined' }
+      }
+      if (value === null) {
+        return { type: 'null', preview: 'null' }
+      }
+      if (typeof value === 'string') {
+        const truncated = value.length > limit
+        return {
+          type: 'string',
+          preview: truncated ? value.slice(0, limit) + '…' : value,
+          truncated: truncated,
+        }
+      }
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        return { type: typeof value, preview: String(value) }
+      }
+      if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+        return { type: 'ArrayBuffer', preview: 'ArrayBuffer(' + value.byteLength + ')' }
+      }
+      const json = JSON.stringify(value)
+      if (typeof json === 'string') {
+        const truncated = json.length > limit
+        return {
+          type: 'json',
+          preview: truncated ? json.slice(0, limit) + '…' : json,
+          truncated: truncated,
+        }
+      }
+      return { type: typeof value, preview: Object.prototype.toString.call(value) }
+    } catch (_) {
+      return { type: 'unserializable', preview: Object.prototype.toString.call(value) }
+    }
+  }
+
+  /** @param {unknown} payload */
+  function handleIdbGetAll(payload) {
+    withContentRpc('VC_IDB_GET_ALL_RESULT', payload, function (ctx) {
+      const name = typeof ctx.data.name === 'string' ? ctx.data.name : ''
+      const storeName = typeof ctx.data.store === 'string' ? ctx.data.store : ''
+      const limit = typeof ctx.data.limit === 'number' ? Math.min(500, Math.max(1, ctx.data.limit)) : 100
+      if (!name || !storeName) {
+        throw Object.assign(new Error('name and store required'), { code: 'BAD_ARGS' })
+      }
+      return new Promise(function (resolve, reject) {
+        const req = ctx.win.indexedDB.open(name)
+        req.onerror = function () {
+          reject(req.error || new Error('open failed'))
+        }
+        req.onsuccess = function () {
+          const db = req.result
+          try {
+            const tx = db.transaction(storeName, 'readonly')
+            const store = tx.objectStore(storeName)
+            const keyPath = store.keyPath
+            const getAllReq =
+              typeof store.getAll === 'function' ? store.getAll(undefined, limit) : null
+            if (!getAllReq) {
+              db.close()
+              resolve({ name: name, store: storeName, keyPath: keyPath, entries: [], truncated: true })
+              return
+            }
+            getAllReq.onsuccess = function () {
+              const values = getAllReq.result || []
+              /** @type {{ key: unknown, value: object }[]} */
+              const entries = []
+              // Also pull keys if possible
+              const keysReq = typeof store.getAllKeys === 'function' ? store.getAllKeys(undefined, limit) : null
+              function finish(keys) {
+                for (let i = 0; i < values.length; i++) {
+                  entries.push({
+                    key: keys && keys[i] !== undefined ? keys[i] : i,
+                    value: serializeIdbValue(values[i]),
+                  })
+                }
+                db.close()
+                resolve({
+                  name: name,
+                  store: storeName,
+                  keyPath: keyPath,
+                  entries: entries,
+                  truncated: values.length >= limit,
+                })
+              }
+              if (keysReq) {
+                keysReq.onsuccess = function () {
+                  finish(keysReq.result || [])
+                }
+                keysReq.onerror = function () {
+                  finish(null)
+                }
+              } else {
+                finish(null)
+              }
+            }
+            getAllReq.onerror = function () {
+              db.close()
+              reject(getAllReq.error || new Error('getAll failed'))
+            }
+          } catch (err) {
+            try {
+              db.close()
+            } catch (_) {}
+            reject(err)
+          }
+        }
+      })
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleSiteCacheList(payload) {
+    withContentRpc('VC_SITE_CACHE_LIST_RESULT', payload, async function (ctx) {
+      if (!ctx.win.caches) {
+        return { caches: [] }
+      }
+      const keys = await ctx.win.caches.keys()
+      return { caches: keys }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleSiteCacheKeys(payload) {
+    withContentRpc('VC_SITE_CACHE_KEYS_RESULT', payload, async function (ctx) {
+      const cacheName = typeof ctx.data.cache === 'string' ? ctx.data.cache : ''
+      const limit = typeof ctx.data.limit === 'number' ? Math.min(500, Math.max(1, ctx.data.limit)) : 200
+      if (!cacheName) {
+        throw Object.assign(new Error('cache required'), { code: 'BAD_CACHE' })
+      }
+      const cache = await ctx.win.caches.open(cacheName)
+      const reqs = await cache.keys()
+      /** @type {string[]} */
+      const urls = []
+      for (let i = 0; i < reqs.length && urls.length < limit; i++) {
+        urls.push(reqs[i].url)
+      }
+      return { cache: cacheName, urls: urls, truncated: reqs.length > limit }
+    })
+  }
+
+  /** @param {unknown} payload */
+  function handleSiteCacheDelete(payload) {
+    withContentRpc('VC_SITE_CACHE_DELETE_RESULT', payload, async function (ctx) {
+      const cacheName = typeof ctx.data.cache === 'string' ? ctx.data.cache : ''
+      const url = typeof ctx.data.url === 'string' ? ctx.data.url : ''
+      if (!cacheName) {
+        throw Object.assign(new Error('cache required'), { code: 'BAD_CACHE' })
+      }
+      if (url) {
+        const cache = await ctx.win.caches.open(cacheName)
+        const deleted = await cache.delete(url)
+        return { cache: cacheName, url: url, deleted: deleted }
+      }
+      const deleted = await ctx.win.caches.delete(cacheName)
+      return { cache: cacheName, deleted: deleted }
     })
   }
 
@@ -3237,14 +3780,11 @@
       .replace(/^https?:\/\//i, 'https://')
       .replace(/\?/g, '%3F')
       .replace(/#/g, '%23')
-    if (sessionId === 'default') {
-      return PROXY_PREFIX + normalized
-    }
-    return '/s/' + encodeURIComponent(sessionId) + PROXY_PREFIX + normalized
+    return PROXY_PREFIX + normalized
   }
 
   /**
-   * Absolute proxy URL for #content (avoids relative-path resolution bugs under /s/<id>/).
+   * Absolute proxy URL for #content.
    * @param {string} url
    */
   function toProxyUrl(url) {
@@ -3252,12 +3792,14 @@
   }
 
   /**
+   * Decode proxy pathname to real URL. Accepts /-----... and legacy /s/<id>/-----...
    * @param {string} path
    */
   function fromProxyPath(path) {
     if (!path || path === '/' || path === '/viewer.html' || path === '/viewer') {
       return ''
     }
+    // Legacy bookmarks: /s/<sessionId>/-----https://...
     const sessionMatch = path.match(/^\/s\/[^/]+(\/+.*)$/)
     const rest = sessionMatch ? sessionMatch[1] : path
     const stripped = rest.replace(/^\/-+/, '')
@@ -3292,8 +3834,8 @@
   }
 
   function emitReady() {
-    postToParent('VC_READY', { version: VERSION, build: BUILD, sessionId })
-    vlog('info', ['virtual-chromo bridge v' + VERSION + ' (build ' + BUILD + ', session ' + sessionId + ')'])
+    postToParent('VC_READY', { version: VERSION, build: BUILD })
+    vlog('info', ['virtual-chromo bridge v' + VERSION + ' (build ' + BUILD + ')'])
   }
 
   /**

@@ -15,9 +15,6 @@ const {
 let mSendToSw = null
 
 /** @type {string} */
-let mSessionId = 'default'
-
-/** @type {string} */
 let mSiteOrigin = ''
 
 /** @type {string} */
@@ -36,13 +33,11 @@ export function setStorageMessenger(fn) {
 
 
 /**
- * @param {string} sessionId
  * @param {string} siteOrigin
  * @param {string} localPrefix
  * @param {string} sessionPrefix
  */
-export function setStorageContext(sessionId, siteOrigin, localPrefix, sessionPrefix) {
-  mSessionId = sessionId
+export function setStorageContext(siteOrigin, localPrefix, sessionPrefix) {
   mSiteOrigin = siteOrigin
   mLocalPrefix = localPrefix
   mSessionPrefix = sessionPrefix
@@ -234,12 +229,11 @@ const mHandles = { local: null, session: null }
 /**
  * @param {WindowOrWorkerGlobalScope} global
  * @param {string} origin
- * @param {string} sessionId
  */
-export function createStorage(global, origin, sessionId) {
-  const localPrefix = `${sessionId}$${origin}$`
-  const sessionPrefix = `${sessionId}$${origin}$session$`
-  setStorageContext(sessionId, origin, localPrefix, sessionPrefix)
+export function createStorage(global, origin) {
+  const localPrefix = `${origin}$`
+  const sessionPrefix = `${origin}$session$`
+  setStorageContext(origin, localPrefix, sessionPrefix)
 
   mHandles.local = setup(global, 'localStorage', localPrefix, true)
   mHandles.session = setup(global, 'sessionStorage', sessionPrefix, false)
@@ -269,7 +263,7 @@ export function createStorage(global, origin, sessionId) {
     return urlx.decUrlStrAbs(val)
   })
 
-  const idbPrefix = `${sessionId}$${origin}$`
+  const idbPrefix = `${origin}$`
 
   function addPrefixHook(oldFn) {
     return function(name) {
@@ -334,14 +328,11 @@ export function handleStoragePush(msg) {
 }
 
 
-/**
- * @param {string} sessionId
- */
-export function clearSessionStorage(sessionId) {
-  if (mHandles.local && mSessionId === sessionId) {
+export function clearAllStorage() {
+  if (mHandles.local) {
     mHandles.local.clearAll()
   }
-  if (mHandles.session && mSessionId === sessionId) {
+  if (mHandles.session) {
     mHandles.session.clearAll()
   }
 }

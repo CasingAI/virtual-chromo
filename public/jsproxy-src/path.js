@@ -12,7 +12,6 @@ function getRootPath() {
   //
   // 如果运行在代理页面，当前路径：
   //   https://example.com/path/to/-----url
-  //   https://example.com/s/{sessionId}/-----url
   // 如果运行在 SW，当前路径：
   //   https://example.com/path/to/sw.js
   // 如果运行在 Worker，当前路径：
@@ -30,11 +29,6 @@ function getRootPath() {
   const proxyPos = url.indexOf('/-----http')
   if (proxyPos !== -1) {
     return url.substr(0, proxyPos).replace(/\/*$/, '/')
-  }
-
-  const sessionShell = url.match(/^(https?:\/\/[^/?#]+(\/s\/[^/?#]+))\/?([?#]|$)/)
-  if (sessionShell) {
-    return sessionShell[1] + '/'
   }
 
   const pos = url.indexOf('/-----http')

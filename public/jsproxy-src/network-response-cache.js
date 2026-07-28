@@ -1,17 +1,20 @@
 import * as util from './util.js'
+import * as httpCache from './http-cache-policy.js'
 
 const ARCHIVE_CACHE = 'vc-net-archive'
 const HOT_CACHE = 'vc-net-hot'
 const VC_ORIGIN = 'https://__vc__'
 
+const HDR_STORED_AT = 'x-vc-hot-stored-at'
+const HDR_EXPIRES_AT = 'x-vc-hot-expires-at'
+
 /**
  * Max bytes streamed from archive for DevTools Response/Preview.
- * Storage itself has no per-entry size cap; hot cache uses HOT_QUOTA_BYTES LRU.
  * @type {number}
  */
 export const BODY_DISPLAY_MAX_BYTES = 64 * 1024
 
-/** @deprecated Use BODY_DISPLAY_MAX_BYTES. Kept as alias for older call sites during transition. */
+/** @deprecated Use BODY_DISPLAY_MAX_BYTES. */
 export const MAX_BODY_BYTES = BODY_DISPLAY_MAX_BYTES
 
 /** Hot cache soft quota (bytes). */
@@ -49,11 +52,10 @@ const OCTET_STREAM_TEXT_PROBE_BYTES = 8 * 1024
 const mTextLineIndex = new Map()
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  */
-function textLineIndexKey(sessionId, entryId) {
-  return `${sessionId}:${entryId}`
+function textLineIndexKey(entryId) {
+  return entryId
 }
 
 /**
@@ -75,23 +77,14 @@ function touchTextLineIndex(key, index) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  */
-export function dropTextLineIndex(sessionId, entryId) {
-  mTextLineIndex.delete(textLineIndexKey(sessionId, entryId))
+export function dropTextLineIndex(entryId) {
+  mTextLineIndex.delete(textLineIndexKey(entryId))
 }
 
-/**
- * @param {string} sessionId
- */
-export function dropTextLineIndexForSession(sessionId) {
-  const prefix = `${sessionId}:`
-  for (const key of [...mTextLineIndex.keys()]) {
-    if (key.startsWith(prefix)) {
-      mTextLineIndex.delete(key)
-    }
-  }
+export function clearTextLineIndexes() {
+  mTextLineIndex.clear()
 }
 
 /**
@@ -360,42 +353,40 @@ export function readTextLineRange(index, fromLine, toLine, metaOnly) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  * @param {Response} res
  * @returns {Promise<TextLineIndex>}
  */
-export async function getOrBuildTextLineIndex(sessionId, entryId, res) {
-  const key = textLineIndexKey(sessionId, entryId)
+export async function getOrBuildTextLineIndex(entryId, res) {
+  const key = textLineIndexKey(entryId)
   const cached = mTextLineIndex.get(key)
   if (cached) {
     touchTextLineIndex(key, cached)
     return cached
   }
-  const index = await buildTextLineIndex(res)
+  const index = await buildTextLineIndex(res.clone())
   touchTextLineIndex(key, index)
   return index
 }
 
 /**
- * @typedef {{ devtoolsId: string, disableCache: boolean, sessionId: string, at: number }} DevtoolsOpts
+ * @typedef {{ devtoolsId: string, disableCache: boolean, at: number }} DevtoolsOpts
  */
 
 /** @type {Map<string, DevtoolsOpts>} */
 const mClientOpts = new Map()
 
-/** @type {Map<string, DevtoolsOpts>} */
-const mSessionFallback = new Map()
+/** @type {DevtoolsOpts|null} */
+let mGlobalOpts = null
 
-/** @type {Map<string, { size: number, at: number }>} */
+/** @type {Map<string, { size: number, at: number, expiresAt: number }>} */
 const mHotIndex = new Map()
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  */
-export function archiveRequestUrl(sessionId, entryId) {
-  return `${VC_ORIGIN}/archive/${encodeURIComponent(sessionId)}/${encodeURIComponent(entryId)}`
+export function archiveRequestUrl(entryId) {
+  return `${VC_ORIGIN}/archive/${encodeURIComponent(entryId)}`
 }
 
 /**
@@ -410,14 +401,24 @@ export function normalizeHotUrl(url) {
 }
 
 /**
- * Session-scoped hot cache key (devtoolsId is NOT part of the key;
- * it only controls Disable cache via resolveContext).
- *
+ * Global hot cache key: method + url (no session).
+ * @param {string} method
+ * @param {string} url
+ */
+export function hotRequestUrl(method, url) {
+  const normalized = normalizeHotUrl(url)
+  const hash = util.strHash(`${method}\0${normalized}`)
+  const hashHex = util.numToHex(hash, 8)
+  return `${VC_ORIGIN}/hot/${hashHex}`
+}
+
+/**
+ * Legacy session-scoped hot key (migration reads only).
  * @param {string} sessionId
  * @param {string} method
  * @param {string} url
  */
-export function hotRequestUrl(sessionId, method, url) {
+export function hotRequestUrlLegacy(sessionId, method, url) {
   const normalized = normalizeHotUrl(url)
   const hash = util.strHash(`${method}\0${normalized}`)
   const hashHex = util.numToHex(hash, 8)
@@ -425,14 +426,13 @@ export function hotRequestUrl(sessionId, method, url) {
 }
 
 /**
- * Legacy hot key that included devtoolsId (pre v5/v6). Used for migration reads only.
- *
+ * Legacy hot key that included devtoolsId.
  * @param {string} sessionId
  * @param {string} devtoolsId
  * @param {string} method
  * @param {string} url
  */
-export function hotRequestUrlLegacy(sessionId, devtoolsId, method, url) {
+export function hotRequestUrlLegacyDevtools(sessionId, devtoolsId, method, url) {
   const normalized = normalizeHotUrl(url)
   const hash = util.strHash(`${method}\0${normalized}`)
   const hashHex = util.numToHex(hash, 8)
@@ -441,7 +441,7 @@ export function hotRequestUrlLegacy(sessionId, devtoolsId, method, url) {
 
 /**
  * @param {string} clientId
- * @param {{ devtoolsId: string, disableCache?: boolean, sessionId: string }} opts
+ * @param {{ devtoolsId: string, disableCache?: boolean }} opts
  */
 export function registerClientOpts(clientId, opts) {
   if (!clientId || !opts.devtoolsId) {
@@ -450,11 +450,10 @@ export function registerClientOpts(clientId, opts) {
   const rec = {
     devtoolsId: opts.devtoolsId,
     disableCache: !!opts.disableCache,
-    sessionId: opts.sessionId,
     at: Date.now(),
   }
   mClientOpts.set(clientId, rec)
-  mSessionFallback.set(opts.sessionId, rec)
+  mGlobalOpts = rec
 }
 
 /**
@@ -470,9 +469,9 @@ export function bindClientDevtools(clientId, devtoolsId) {
       mClientOpts.set(clientId, {
         devtoolsId: rec.devtoolsId,
         disableCache: rec.disableCache,
-        sessionId: rec.sessionId,
         at: Date.now(),
       })
+      mGlobalOpts = mClientOpts.get(clientId) || mGlobalOpts
       return
     }
   }
@@ -480,46 +479,35 @@ export function bindClientDevtools(clientId, devtoolsId) {
 
 /**
  * @param {string} clientId
- * @param {string} sessionId
  * @returns {DevtoolsOpts|null}
  */
-export function resolveContext(clientId, sessionId) {
+export function resolveContext(clientId) {
   if (clientId && mClientOpts.has(clientId)) {
     return mClientOpts.get(clientId) || null
   }
-  const fallback = mSessionFallback.get(sessionId)
-  if (fallback) {
+  if (mGlobalOpts) {
     if (clientId) {
       mClientOpts.set(clientId, {
-        devtoolsId: fallback.devtoolsId,
-        disableCache: fallback.disableCache,
-        sessionId: fallback.sessionId,
+        devtoolsId: mGlobalOpts.devtoolsId,
+        disableCache: mGlobalOpts.disableCache,
         at: Date.now(),
       })
     }
-    return fallback
+    return mGlobalOpts
   }
-  // Before PAGE_NETWORK_OPTS arrives, provisional opts so first-paint GETs
-  // still resolve disableCache=false under the same session namespace.
-  if (sessionId && sessionId !== 'default') {
-    const provisional = {
-      devtoolsId: sessionId,
-      disableCache: false,
-      sessionId: sessionId,
-      at: Date.now(),
-    }
-    mSessionFallback.set(sessionId, provisional)
-    if (clientId) {
-      mClientOpts.set(clientId, provisional)
-    }
-    return provisional
+  const provisional = {
+    devtoolsId: 'global',
+    disableCache: false,
+    at: Date.now(),
   }
-  return null
+  mGlobalOpts = provisional
+  if (clientId) {
+    mClientOpts.set(clientId, provisional)
+  }
+  return provisional
 }
 
 /**
- * Whether a captured body size is eligible for archive/hot storage.
- * No per-entry byte cap — larger responses should still be cached.
  * @param {number} size
  */
 export function shouldStoreBody(size) {
@@ -528,7 +516,7 @@ export function shouldStoreBody(size) {
 
 /**
  * @param {Response} res
- * @returns {Promise<number>} byte length, or -1 if unreadable
+ * @returns {Promise<number>}
  */
 async function responseByteLength(res) {
   try {
@@ -540,9 +528,7 @@ async function responseByteLength(res) {
 }
 
 /**
- * Stream-read a cached Response body up to BODY_DISPLAY_MAX_BYTES for DevTools UI.
  * @param {Response} res
- * @returns {Promise<{ text: string, truncated: boolean, bytesRead: number, headers: Record<string, string>, status: number }>}
  */
 export async function readBodyDisplayPrefix(res) {
   const headers = headersToObject(res.headers)
@@ -605,15 +591,14 @@ export async function readBodyDisplayPrefix(res) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  * @param {Response} res
  * @returns {Promise<boolean>}
  */
-export async function putArchive(sessionId, entryId, res) {
+export async function putArchive(entryId, res) {
   try {
     const cache = await caches.open(ARCHIVE_CACHE)
-    const req = new Request(archiveRequestUrl(sessionId, entryId))
+    const req = new Request(archiveRequestUrl(entryId))
     await cache.put(req, res.clone())
     return true
   } catch (err) {
@@ -623,14 +608,13 @@ export async function putArchive(sessionId, entryId, res) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  * @returns {Promise<Response|null>}
  */
-export async function getArchive(sessionId, entryId) {
+export async function getArchive(entryId) {
   try {
     const cache = await caches.open(ARCHIVE_CACHE)
-    const req = new Request(archiveRequestUrl(sessionId, entryId))
+    const req = new Request(archiveRequestUrl(entryId))
     return await cache.match(req)
   } catch (err) {
     console.warn('[vc] archive get fail:', err)
@@ -639,14 +623,13 @@ export async function getArchive(sessionId, entryId) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} entryId
  */
-export async function dropArchive(sessionId, entryId) {
-  dropTextLineIndex(sessionId, entryId)
+export async function dropArchive(entryId) {
   try {
+    dropTextLineIndex(entryId)
     const cache = await caches.open(ARCHIVE_CACHE)
-    await cache.delete(new Request(archiveRequestUrl(sessionId, entryId)))
+    await cache.delete(new Request(archiveRequestUrl(entryId)))
   } catch (err) {
     console.warn('[vc] archive drop fail:', err)
   }
@@ -689,23 +672,70 @@ async function ensureHotQuota(nextSize) {
 }
 
 /**
- * @param {string} sessionId
+ * Strip internal hot metadata headers before returning to content.
+ * @param {Response} res
+ * @returns {Response}
+ */
+function stripHotMeta(res) {
+  const headers = new Headers(res.headers)
+  headers.delete(HDR_STORED_AT)
+  headers.delete(HDR_EXPIRES_AT)
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  })
+}
+
+/**
+ * @param {Response} res
+ * @returns {{ storedAt: number, expiresAt: number }}
+ */
+function readHotMeta(res) {
+  const storedAt = parseInt(res.headers.get(HDR_STORED_AT) || '', 10)
+  const expiresAt = parseInt(res.headers.get(HDR_EXPIRES_AT) || '', 10)
+  return {
+    storedAt: Number.isFinite(storedAt) ? storedAt : 0,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+  }
+}
+
+/**
  * @param {string} method
  * @param {string} url
  * @param {Response} res
+ * @param {{ reqHeaders?: Headers|Record<string, string> }=} opts
  * @returns {Promise<boolean>}
  */
-export async function putHot(sessionId, method, url, res) {
+export async function putHot(method, url, res, opts) {
+  const reqHeaders = opts && opts.reqHeaders
+  const check = httpCache.isCacheable(method, res.status, reqHeaders, res.headers)
+  if (!check.ok) {
+    return false
+  }
   const size = await responseByteLength(res)
   if (!shouldStoreBody(size)) {
     return false
   }
-  const hotUrl = hotRequestUrl(sessionId, method, url)
+  const storedAt = Date.now()
+  const expiresAt = httpCache.computeExpiresAt(res.headers, storedAt, url)
+  if (!httpCache.isFresh(expiresAt, storedAt + 1)) {
+    return false
+  }
+  const hotUrl = hotRequestUrl(method, url)
   try {
     await ensureHotQuota(size)
+    const headers = new Headers(res.headers)
+    headers.set(HDR_STORED_AT, String(storedAt))
+    headers.set(HDR_EXPIRES_AT, String(expiresAt))
+    const toStore = new Response(res.clone().body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    })
     const cache = await caches.open(HOT_CACHE)
-    await cache.put(new Request(hotUrl), res.clone())
-    mHotIndex.set(hotUrl, { size, at: Date.now() })
+    await cache.put(new Request(hotUrl), toStore)
+    mHotIndex.set(hotUrl, { size, at: storedAt, expiresAt })
     return true
   } catch (err) {
     console.warn('[vc] hot put fail:', err)
@@ -714,43 +744,85 @@ export async function putHot(sessionId, method, url, res) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} method
  * @param {string} url
- * @param {string=} legacyDevtoolsId
+ * @param {{ legacySessionId?: string, legacyDevtoolsId?: string }=} migrate
  * @returns {Promise<Response|null>}
  */
-export async function getHot(sessionId, method, url, legacyDevtoolsId) {
+export async function getHot(method, url, migrate) {
   try {
-    const hotUrl = hotRequestUrl(sessionId, method, url)
+    const hotUrl = hotRequestUrl(method, url)
     const cache = await caches.open(HOT_CACHE)
     let res = await cache.match(new Request(hotUrl))
-    if (!res && legacyDevtoolsId) {
-      const legacyUrl = hotRequestUrlLegacy(sessionId, legacyDevtoolsId, method, url)
+
+    if (!res && migrate && migrate.legacySessionId) {
+      const legacyUrl = hotRequestUrlLegacy(migrate.legacySessionId, method, url)
       res = await cache.match(new Request(legacyUrl))
+      if (!res && migrate.legacyDevtoolsId) {
+        const legacyDev = hotRequestUrlLegacyDevtools(
+          migrate.legacySessionId,
+          migrate.legacyDevtoolsId,
+          method,
+          url,
+        )
+        res = await cache.match(new Request(legacyDev))
+        if (res) {
+          await cache.delete(new Request(legacyDev))
+        }
+      }
       if (res) {
-        // Migrate to session-scoped key for subsequent hits.
         try {
           const size = await responseByteLength(res)
           if (shouldStoreBody(size)) {
             await ensureHotQuota(size)
-            await cache.put(new Request(hotUrl), res.clone())
-            mHotIndex.set(hotUrl, { size, at: Date.now() })
+            const meta = readHotMeta(res)
+            const storedAt = meta.storedAt || Date.now()
+            const expiresAt =
+              meta.expiresAt ||
+              httpCache.computeExpiresAt(res.headers, storedAt, url)
+            const headers = new Headers(res.headers)
+            headers.set(HDR_STORED_AT, String(storedAt))
+            headers.set(HDR_EXPIRES_AT, String(expiresAt))
+            await cache.put(
+              new Request(hotUrl),
+              new Response(res.clone().body, {
+                status: res.status,
+                statusText: res.statusText,
+                headers,
+              }),
+            )
+            mHotIndex.set(hotUrl, { size, at: storedAt, expiresAt })
             await cache.delete(new Request(legacyUrl))
             mHotIndex.delete(legacyUrl)
+            res = await cache.match(new Request(hotUrl))
           }
         } catch {
-          // ignore migrate failures; still return legacy hit
+          // ignore migrate failures
         }
       }
     }
-    if (res) {
-      const meta = mHotIndex.get(hotUrl)
-      if (meta) {
-        meta.at = Date.now()
-      }
+
+    if (!res) {
+      return null
     }
-    return res
+
+    const meta = readHotMeta(res)
+    let expiresAt = meta.expiresAt
+    if (!expiresAt) {
+      expiresAt = httpCache.computeExpiresAt(res.headers, meta.storedAt || Date.now(), url)
+    }
+    if (!httpCache.isFresh(expiresAt)) {
+      await evictHotUrl(hotUrl)
+      return null
+    }
+
+    const indexed = mHotIndex.get(hotUrl)
+    if (indexed) {
+      indexed.at = Date.now()
+      indexed.expiresAt = expiresAt
+    }
+
+    return stripHotMeta(res)
   } catch (err) {
     console.warn('[vc] hot get fail:', err)
     return null
@@ -758,57 +830,217 @@ export async function getHot(sessionId, method, url, legacyDevtoolsId) {
 }
 
 /**
- * @param {string} sessionId
  * @param {string} method
  * @param {string} url
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ exists: boolean, fresh: boolean, expiresAt?: number }>}
  */
-export async function hasHot(sessionId, method, url) {
+export async function probeHot(method, url) {
   try {
-    const hotUrl = hotRequestUrl(sessionId, method, url)
+    const hotUrl = hotRequestUrl(method, url)
     const cache = await caches.open(HOT_CACHE)
     const res = await cache.match(new Request(hotUrl))
-    return !!res
+    if (!res) {
+      return { exists: false, fresh: false }
+    }
+    const meta = readHotMeta(res)
+    const expiresAt =
+      meta.expiresAt ||
+      httpCache.computeExpiresAt(res.headers, meta.storedAt || Date.now(), url)
+    const fresh = httpCache.isFresh(expiresAt)
+    if (!fresh) {
+      await evictHotUrl(hotUrl)
+      return { exists: false, fresh: false, expiresAt }
+    }
+    return { exists: true, fresh: true, expiresAt }
   } catch {
-    return false
+    return { exists: false, fresh: false }
   }
 }
 
 /**
- * @param {string} sessionId
+ * @param {string} method
+ * @param {string} url
+ * @returns {Promise<boolean>}
  */
-export async function destroySessionCaches(sessionId) {
-  dropTextLineIndexForSession(sessionId)
-  const prefixArchive = `${VC_ORIGIN}/archive/${encodeURIComponent(sessionId)}/`
-  const prefixHot = `${VC_ORIGIN}/hot/${encodeURIComponent(sessionId)}/`
+export async function hasHot(method, url) {
+  const r = await probeHot(method, url)
+  return r.exists && r.fresh
+}
 
-  for (const clientId of [...mClientOpts.keys()]) {
-    const rec = mClientOpts.get(clientId)
-    if (rec && rec.sessionId === sessionId) {
-      mClientOpts.delete(clientId)
+/**
+ * Rebuild mHotIndex from Cache Storage and drop expired entries.
+ */
+export async function rebuildHotIndex() {
+  mHotIndex.clear()
+  try {
+    const cache = await caches.open(HOT_CACHE)
+    const keys = await cache.keys()
+    for (const req of keys) {
+      const res = await cache.match(req)
+      if (!res) {
+        continue
+      }
+      const meta = readHotMeta(res)
+      const expiresAt = meta.expiresAt || 0
+      if (expiresAt && !httpCache.isFresh(expiresAt)) {
+        await cache.delete(req)
+        continue
+      }
+      const size = await responseByteLength(res)
+      if (!shouldStoreBody(size)) {
+        continue
+      }
+      mHotIndex.set(req.url, {
+        size,
+        at: meta.storedAt || Date.now(),
+        expiresAt: expiresAt || Date.now() + HEURISTIC_FALLBACK,
+      })
     }
+  } catch (err) {
+    console.warn('[vc] rebuild hot index fail:', err)
   }
-  mSessionFallback.delete(sessionId)
+}
 
+const HEURISTIC_FALLBACK = 5 * 60 * 1000
+
+/**
+ * Clear all archive + hot network caches.
+ */
+export async function clearAllNetworkCaches() {
+  mClientOpts.clear()
+  mGlobalOpts = null
+  mHotIndex.clear()
+  clearTextLineIndexes()
   for (const name of [ARCHIVE_CACHE, HOT_CACHE]) {
     try {
-      const cache = await caches.open(name)
+      await caches.delete(name)
+    } catch (err) {
+      console.warn('[vc] clear network cache fail:', err)
+    }
+  }
+}
+
+/**
+ * @param {'hot'|'archive'|'all'} layer
+ */
+export async function clearNetworkCacheLayer(layer) {
+  if (layer === 'all') {
+    await clearAllNetworkCaches()
+    return
+  }
+  if (layer === 'hot') {
+    mHotIndex.clear()
+    try {
+      await caches.delete(HOT_CACHE)
+    } catch (err) {
+      console.warn('[vc] clear hot cache fail:', err)
+    }
+    return
+  }
+  if (layer === 'archive') {
+    clearTextLineIndexes()
+    try {
+      await caches.delete(ARCHIVE_CACHE)
+    } catch (err) {
+      console.warn('[vc] clear archive cache fail:', err)
+    }
+  }
+}
+
+/**
+ * @returns {Promise<{
+ *   hot: { entries: number, bytes: number },
+ *   archive: { entries: number, bytes: number }
+ * }>}
+ */
+export async function getNetworkCacheStats() {
+  await rebuildHotIndex()
+  let hotBytes = 0
+  for (const meta of mHotIndex.values()) {
+    hotBytes += meta.size || 0
+  }
+  let archiveEntries = 0
+  let archiveBytes = 0
+  try {
+    const cache = await caches.open(ARCHIVE_CACHE)
+    const keys = await cache.keys()
+    archiveEntries = keys.length
+    for (const req of keys) {
+      const res = await cache.match(req)
+      if (res) {
+        archiveBytes += await responseByteLength(res)
+      }
+    }
+  } catch (err) {
+    console.warn('[vc] archive stats fail:', err)
+  }
+  return {
+    hot: { entries: mHotIndex.size, bytes: hotBytes },
+    archive: { entries: archiveEntries, bytes: archiveBytes },
+  }
+}
+
+/**
+ * @param {'hot'|'archive'} layer
+ * @param {number} [limit]
+ * @returns {Promise<object[]>}
+ */
+export async function listNetworkCache(layer, limit = 200) {
+  const max = Math.max(1, Math.min(1000, limit | 0 || 200))
+  if (layer === 'hot') {
+    await rebuildHotIndex()
+    /** @type {{ key: string, size: number, storedAt: number, expiresAt: number, fresh: boolean }[]} */
+    const rows = []
+    try {
+      const cache = await caches.open(HOT_CACHE)
       const keys = await cache.keys()
       for (const req of keys) {
-        if (req.url.startsWith(prefixArchive) || req.url.startsWith(prefixHot)) {
-          await cache.delete(req)
+        if (rows.length >= max) {
+          break
         }
+        const meta = mHotIndex.get(req.url)
+        const expiresAt = meta?.expiresAt || 0
+        rows.push({
+          key: req.url,
+          size: meta?.size || 0,
+          storedAt: meta?.at || 0,
+          expiresAt,
+          fresh: expiresAt ? httpCache.isFresh(expiresAt) : false,
+        })
       }
     } catch (err) {
-      console.warn('[vc] destroy session cache fail:', err)
+      console.warn('[vc] list hot fail:', err)
     }
+    return rows
   }
 
-  for (const url of [...mHotIndex.keys()]) {
-    if (url.startsWith(prefixHot)) {
-      mHotIndex.delete(url)
+  /** @type {{ key: string, entryId: string, size: number }[]} */
+  const rows = []
+  try {
+    const cache = await caches.open(ARCHIVE_CACHE)
+    const keys = await cache.keys()
+    for (const req of keys) {
+      if (rows.length >= max) {
+        break
+      }
+      const m = /\/archive\/([^/?#]+)/.exec(req.url)
+      const entryId = m ? decodeURIComponent(m[1]) : ''
+      const res = await cache.match(req)
+      const size = res ? await responseByteLength(res) : 0
+      rows.push({ key: req.url, entryId, size })
     }
+  } catch (err) {
+    console.warn('[vc] list archive fail:', err)
   }
+  return rows
+}
+
+/**
+ * @deprecated use clearAllNetworkCaches
+ * @param {string=} _sessionId
+ */
+export async function destroySessionCaches(_sessionId) {
+  await clearAllNetworkCaches()
 }
 
 /**
@@ -825,8 +1057,6 @@ export function headersToObject(headers) {
 }
 
 /**
- * Wrap a body stream: count bytes, optionally accumulate for archive/hot storage.
- *
  * @param {ReadableStream|null|undefined} body
  * @param {(size: number, chunks: Uint8Array[]) => void} onComplete
  * @returns {ReadableStream|null|undefined}

@@ -5,28 +5,6 @@
 
 ---
 
-## Session 隔离（BrowserContext，build `20260727-v17`+）
-
-### 语义
-
-- **sessionId** = Playwright `BrowserContext`：cookie / localStorage / IndexedDB / Cache 按 session 隔离
-- **同一 session 多 tab**：共享登录态；cookie 与 localStorage 跨 tab 同步（`StorageEvent`）
-- **关 tab**：状态保留；仅 `VC_SESSION_DESTROY` 或 idle GC（无 client 超过 1h）清空
-- **URL**：`/s/<sessionId>/` 与 `/s/<sessionId>/-----https://…`
-
-### 实现要点
-
-- 源码：[`public/jsproxy-src/session.js`](../public/jsproxy-src/session.js)、[`cookie.js`](../public/jsproxy-src/cookie.js)、[`storage.js`](../public/jsproxy-src/storage.js)
-- 父项目开 tab：每个 iframe `src="https://worker/s/<uuid>/"`，或发 `VC_SESSION_CREATE`
-- **不要**依赖多 Worker 部署做隔离
-
-### 已知限制
-
-- 站点 **IndexedDB 跨 tab 实时一致**与 Chrome 仍有差距（仅库名按 session 前缀隔离）
-- legacy 根路径 `/` 使用 `default` session，与 `/s/…` 不互通
-
----
-
 ## inject.js 未加载
 
 ### 现象
@@ -187,9 +165,9 @@ document.__vcPassiveNavInstalled  // true（v19+ bundle 侧 capture 已装）
 **现象**：`recaptcha-demo.appspot.com` 等页里 reCAPTCHA iframe 空白；DevTools 里 `src` 为  
 `https://www.google.com/-----https://www.google.com/recaptcha/api2/anchor?...`
 
-**根因**：Session 改造后 [`urlx.encUrlObj`](../public/jsproxy-src/urlx.js) 误用**目标站** `urlObj.origin` 拼代理前缀，应使用 Worker / 当前页 origin。
+**根因**：曾误用**目标站** `urlObj.origin` 拼代理前缀，应使用 Worker / 当前页 origin。
 
-**修复**：build `20260727-v22`+ 改为用 `path.ROOT` / `location.origin` 作为 proxy origin；`v23`+ 页内编码改回优先 `path.PREFIX`（带 `/s/{id}/`）。
+**修复**：build `20260727-v22`+ 改为用 `path.ROOT` / `location.origin` 作为 proxy origin；`v23`+ 页内编码优先 `path.PREFIX`。build `20260728-v12`+ 新导航不再带 `/s/` 前缀。
 
 ### reCAPTCHA 被当成代理子页（build `< v23`）
 
@@ -277,18 +255,20 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
-### DevTools 热缓存（build `20260728-v8`+）
+### DevTools 热缓存（build `20260728-v12`+）
 
-- 热缓存 key：`sessionId + method + url`（**session 级持久**，跨页面 reload；URL 经 normalize；存于 Cache Storage `vc-net-hot`）
+- 热缓存 key：`method + url`（**全局**，无 session 键；URL 经 normalize；存于 Cache Storage `vc-net-hot`）
+- **Cache-Control TTL** 决定是否 fresh；过期条目不命中，需重新拉取
 - Redirect 不分裂 key：put/get 使用用户**原始请求 URL**
-- `devtoolsId` **仅**绑定 Disable cache 开关（跳过 get/put），**不参与** hot key；get/put 门闩改为 `sid && !disableCache`
-- 仅 **GET、Disable cache 关闭、经 proxy 通路** 时写入（**无单条 body 体积上限**）；**首次 GET 只写入不命中**，同 session 再次请求同 URL 才显示 `DevTools memory cache`
-- 热缓存 session 总配额约 50MB，LRU 淘汰旧条目
+- `devtoolsId` **仅**绑定 Disable cache 开关（跳过 get/put），**不参与** hot key
+- 仅 **GET、Disable cache 关闭、经 proxy 通路** 时写入（**无单条 body 体积上限**）；仅当无 fresh 条目时 miss；有未过期条目才显示 `DevTools memory cache`
+- 热缓存全局总配额约 50MB，LRU 淘汰旧条目
 - entry 字段 `hotStored`：本次是否成功写入热缓存
-- `VC_NETWORK_HOT_PROBE`：诊断表可探测「SW 中是否已有该 URL」
-- Served from「?」诊断：区分「满足写入条件」与「本次命中」；Network 列表内重复 URL 仅供参考；首次写入 miss 为灰色说明
-- 响应头 **Cache-Control** 管浏览器 HTTP 缓存；**Served from 不反映** disk/memory cache
-- 清除：`VC_SESSION_DESTROY` → `destroySessionCaches`；显式管理 API（`VC_NETWORK_CACHE_STATS` / `CLEAR` / `LIST`）见下方长期 TODO
+- `VC_NETWORK_HOT_PROBE`：返回 `{ exists, fresh, expiresAt? }`
+- Served from「?」诊断：区分「满足写入条件」与「本次命中」；Network 列表内重复 URL 仅供参考
+- 响应头 **Cache-Control** 同时影响热缓存 TTL；**Served from 不反映**浏览器 disk/memory cache
+- 清除：`VC_CLEAR_STATE`（清空全局 cookie / storage / hot / archive / url-cache）；重启后若条目仍 fresh 仍可命中
+- 显式管理 API（`VC_NETWORK_CACHE_STATS` / `CLEAR` / `LIST`）见下方长期 TODO
 
 ### Viewer 版本守护（build `20260728-v4`+）
 
@@ -314,16 +294,18 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 ### 自检
 
-1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v9`+）
-2. Network 点选请求：Headers 三区（General / Response / Request）可见
-3. 选中 hasBody 请求：Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
-4. 同 session 刷新后同 URL：第二次应出现 `cache` badge / `DevTools memory cache`
-5. 首次 GET 未命中时点 Served from 旁 **?**：写入条件绿、`热缓存命中` 为灰色「本次写入」；可看到「SW 中已有该 URL 条目」
-6. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
-7. Console 执行 `fetch('/')`：Initiator 显示 kind=fetch 与调用栈；静态 `<script src>` 显示 kind=parser、无栈
-7. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
-8. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
-9. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v12`+）
+2. iframe 入口为 `/viewer` 或 `/`；新导航 URL **不应**再出现 `/s/<id>/`
+3. Network 点选请求：Headers 三区（General / Response / Request）可见
+4. 选中 hasBody 请求：Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
+5. 同 URL 再次请求且 hot 仍 fresh：应出现 `cache` badge / `DevTools memory cache`；无 fresh 条目时才 miss
+6. 点 Served from 旁 **?**：可区分写入条件与本次命中；`VC_NETWORK_HOT_PROBE` 可见 `exists` / `fresh`
+7. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
+8. Console 执行 `fetch('/')`：Initiator 显示 kind=fetch 与调用栈；静态 `<script src>` 显示 kind=parser、无栈
+9. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
+10. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
+11. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复
+12. `VC_CLEAR_STATE` 后 cookie / storage / hot 清空；未 clear 时重启仍可能命中未过期 hot
 
 ---
 
@@ -332,6 +314,6 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - [x] 用 `jsproxy-src` + `bundle.built.js` 替换黑盒 `bundle.js`（进行中）
 - [x] 修复 `HTMLElement.prototype.click` connected 分支（v14+）
 - [ ] Debug Panel 可选接入 `consoleBuffer` 显示子页日志
-- [ ] **Network 缓存存储管理 API**（对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS`（hot/archive 条目数与字节）、`VC_NETWORK_CACHE_CLEAR`（`layer: hot|archive|all`）、`VC_NETWORK_CACHE_LIST`（调试列出 hot key）；bridge 转发；instant-app 设置/存储页挂入口
+- [x] **Network 缓存存储管理 API**（对齐 `PAGE_STORAGE_*`）：`VC_NETWORK_CACHE_STATS`（hot/archive 条目数与字节）、`VC_NETWORK_CACHE_CLEAR`（`layer: hot|archive|all`）、`VC_NETWORK_CACHE_LIST`（调试列出 hot key）；bridge 转发；instant-app Application 面板挂入口（build `20260728-v14`+）
 
 上游遗留耦合（jsDelivr 预缓存、多节点路由、Google 默认搜索等）的完整清单与处置优先级见 **[jsproxy-legacy-decoupling.md](jsproxy-legacy-decoupling.md)**。

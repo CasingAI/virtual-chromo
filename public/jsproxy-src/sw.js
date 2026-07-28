@@ -11,7 +11,6 @@ import * as fetchCtx from './network-fetch-context.js'
 import * as MSG from './msg.js'
 import * as jsfilter from './jsfilter.js'
 import * as inject from './inject.js'
-import * as session from './session.js'
 import * as sessionStorage from './session-storage.js'
 import {Signal} from './signal.js'
 import {Database} from './database.js'
@@ -186,21 +185,15 @@ function processJs(buf, charset) {
  * @param {*} cmd
  * @param {*} msg
  * @param {string=} srcId
- * @param {string=} sessionId
  */
-async function sendMsgToPages(cmd, msg, srcId, sessionId) {
+async function sendMsgToPages(cmd, msg, srcId) {
   const pages = await clients.matchAll({type: 'window'})
-  const sid = sessionId || session.getCurrentSessionId()
 
-  // Deliver to every window client in this session (viewer shell + nested
-  // content). Filtering to top-level broke cookie/storage sync and Network
-  // pushes when virtual-chromo is embedded as a nested iframe.
+  // Deliver to every window client (viewer shell + nested content).
+  // Filtering to top-level broke cookie/storage sync and Network pushes
+  // when virtual-chromo is embedded as a nested iframe.
   for (const page of pages) {
     if (srcId && page.id === srcId) {
-      continue
-    }
-    const pageSession = session.parseSessionFromUrl(page.url).sessionId
-    if (pageSession !== sid) {
       continue
     }
     sendMsg(page, cmd, msg)
@@ -318,8 +311,7 @@ function parseGatewayError(jsonStr, status, urlObj) {
  * @returns {Promise<Response>}
  */
 networkLog.setEmitter(function (entry) {
-  const sid = (entry && entry.sessionId) || session.getCurrentSessionId()
-  sendMsgToPages(MSG.SW_NETWORK_PUSH, entry, undefined, sid)
+  sendMsgToPages(MSG.SW_NETWORK_PUSH, entry)
 })
 
 
@@ -328,22 +320,20 @@ networkLog.setEmitter(function (entry) {
  * @param {URL} urlObj
  * @param {URL} cliUrlObj
  * @param {number} redirNum
- * @param {string=} sessionId
  * @param {string=} clientId
  * @param {string=} hotKeyUrl
  * @returns {Promise<Response>}
  */
-async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, hotKeyUrl) {
-  const sid = sessionId || session.getCurrentSessionId()
+async function forward(req, urlObj, cliUrlObj, redirNum, clientId, hotKeyUrl) {
   const isTurnstile = isPassthroughHost(urlObj.hostname)
   const startMs = Date.now()
   const entryId = networkLog.makeId()
-  const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
+  const devtoolsCtx = netCache.resolveContext(clientId || '')
   const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
   const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
   const cacheUrl = hotKeyUrl || netCache.normalizeHotUrl(urlObj.href)
   const pageUrl = cliUrlObj && cliUrlObj.href ? urlx.decUrlStrAbs(cliUrlObj.href) || cliUrlObj.href : ''
-  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, sid, pageUrl)
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, pageUrl)
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
   const timingMarks = {}
 
@@ -360,14 +350,13 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
     networkLog.record(req, urlObj, null, startMs, {
       pending: true,
       id: entryId,
-      sessionId: sid,
       devtoolsId,
       timing: currentTiming(),
       ...initiatorMeta,
     })
 
-    if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
-      const hot = await netCache.getHot(sid, req.method, cacheUrl, devtoolsId)
+    if (!disableCache && req.method === 'GET') {
+      const hot = await netCache.getHot(req.method, cacheUrl)
       if (hot) {
         const now = Date.now()
         timingMarks.startedAt = now
@@ -378,7 +367,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
           status: hot.status,
           headers: hot.headers,
         }
-        await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+        await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
           fromCache: true,
           source: 'cache',
           hotKeyUrl: cacheUrl,
@@ -395,7 +384,6 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
       networkLog.record(req, urlObj, null, startMs, {
         failed: true,
         id: entryId,
-        sessionId: sid,
         devtoolsId,
         errorCode: 'ERR_PROXY_FETCH_FAILED',
         errorText: '无法连接代理网关',
@@ -421,7 +409,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
     const launchSourceHost = typeof r.sourceHost === 'string' ? r.sourceHost : ''
 
     if (cookies) {
-      sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, sid)
+      sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies)
     }
 
     if (!status) {
@@ -452,7 +440,6 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
       networkLog.record(req, urlObj, res, startMs, {
         failed: true,
         id: entryId,
-        sessionId: sid,
         devtoolsId,
         source: launchSource,
         sourceHost: launchSourceHost,
@@ -473,7 +460,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
      */
     const storeAndFinish = async (chunks, extra) => {
       await storeNetworkResponse(
-        req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+        req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
           ...(extra || {}),
           source: launchSource,
           sourceHost: launchSourceHost,
@@ -490,7 +477,6 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
     const finishEntry = (extra) => {
       networkLog.record(req, urlObj, res, startMs, {
         id: entryId,
-        sessionId: sid,
         devtoolsId,
         source: launchSource,
         sourceHost: launchSourceHost,
@@ -537,7 +523,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
           if (++redirNum === MAX_REDIR) {
             return makeHtmlRes('重定向过多', 500)
           }
-          return forward(req, locObj, cliUrlObj, redirNum, sid, clientId, cacheUrl)
+          return forward(req, locObj, cliUrlObj, redirNum, clientId, cacheUrl)
         }
         setHeader('location', urlx.encUrlObj(locObj))
       }
@@ -601,14 +587,13 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
  * @param {URL} urlObj
  * @param {number} startMs
  * @param {string} entryId
- * @param {string} sid
  * @param {string} devtoolsId
  * @param {boolean} disableCache
  * @param {ResponseInit} resOpt
  * @param {Uint8Array[]} chunks
  * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string, hotKeyUrl?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} [extra]
  */
-async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, extra) {
+async function storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, extra) {
   const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
   let hasBody = false
   let hotStored = false
@@ -618,15 +603,15 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
       : netCache.normalizeHotUrl(urlObj.href)
   if (netCache.shouldStoreBody(size) && chunks.length) {
     const snapshot = netCache.responseFromChunks(resOpt, chunks)
-    hasBody = await netCache.putArchive(sid, entryId, snapshot)
+    hasBody = await netCache.putArchive(entryId, snapshot)
     if (
       !disableCache &&
-      sid &&
-      sid !== 'default' &&
       req.method === 'GET' &&
       !(extra && extra.fromCache)
     ) {
-      hotStored = await netCache.putHot(sid, req.method, cacheUrl, snapshot)
+      hotStored = await netCache.putHot(req.method, cacheUrl, snapshot, {
+        reqHeaders: req.headers,
+      })
     }
   }
   let source = extra && typeof extra.source === 'string' ? extra.source : ''
@@ -644,7 +629,6 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
     statusText: typeof resOpt.statusText === 'string' ? resOpt.statusText : '',
   }, startMs, {
     id: entryId,
-    sessionId: sid,
     devtoolsId,
     size,
     hasBody,
@@ -669,10 +653,9 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
  * Resolve initiator once per request (consumes tip); reuse on later upserts.
  * @param {Request} req
  * @param {URL} urlObj
- * @param {string} sid
  * @param {string=} pageUrl
  */
-function resolveInitiatorForRequest(req, urlObj, sid, pageUrl) {
+function resolveInitiatorForRequest(req, urlObj, pageUrl) {
   let tipId = ''
   try {
     tipId = req.headers.get(networkInitiator.INITIATOR_HEADER) || ''
@@ -689,7 +672,6 @@ function resolveInitiatorForRequest(req, urlObj, sid, pageUrl) {
     referrer = ''
   }
   return networkInitiator.resolveInitiator({
-    sessionId: sid,
     tipId,
     url: urlObj.href,
     referrer,
@@ -702,12 +684,10 @@ function resolveInitiatorForRequest(req, urlObj, sid, pageUrl) {
 /**
  * @param {FetchEvent} e
  * @param {URL} urlObj
- * @param {string=} sessionId
  */
-async function proxy(e, urlObj, sessionId) {
+async function proxy(e, urlObj) {
   const id = e.clientId
-  const sid = sessionId || session.getCurrentSessionId()
-  const devtoolsCtx = netCache.resolveContext(id || '', sid)
+  const devtoolsCtx = netCache.resolveContext(id || '')
   if (e.resultingClientId && devtoolsCtx) {
     netCache.bindClientDevtools(e.resultingClientId, devtoolsCtx.devtoolsId)
   }
@@ -721,7 +701,7 @@ async function proxy(e, urlObj, sessionId) {
   const cliUrlObj = new URL(cliUrlStr)
 
   try {
-    return await forward(e.request, urlObj, cliUrlObj, 0, sid, id)
+    return await forward(e.request, urlObj, cliUrlObj, 0, id)
   } catch (err) {
     console.error(err)
     return makeHtmlRes('前端脚本错误<br><pre>' + err.stack + '</pre>', 500)
@@ -761,15 +741,6 @@ function initDB() {
     await network.setDB(mDB)
     await cookie.setDB(mDB)
     await sessionStorage.setDB(mDB)
-
-    session.setDestroyHandler(async sessionId => {
-      await cookie.destroySession(sessionId)
-      await sessionStorage.destroySession(sessionId)
-      await network.destroySessionCache(sessionId)
-      await netCache.destroySessionCaches(sessionId)
-      sendMsgToPages(MSG.SW_SESSION_DESTROY, { sessionId }, undefined, sessionId)
-    })
-    session.startIdleGc()
   })().catch(err => {
     mDBInit = null
     throw err
@@ -891,8 +862,7 @@ function passthroughFetchRaw(req, urlStr, targetUrlStr) {
  */
 async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
   const urlObj = urlx.newUrl(targetUrlStr) || new URL(targetUrlStr)
-  const sid = session.getCurrentSessionId()
-  const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
+  const devtoolsCtx = netCache.resolveContext(clientId || '')
   const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
   const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
   const cacheUrl = netCache.normalizeHotUrl(urlObj.href)
@@ -909,7 +879,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       pageUrl = ''
     }
   }
-  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, sid, pageUrl)
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, pageUrl)
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
   const timingMarks = {}
 
@@ -927,14 +897,13 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       pending: true,
       bypass: true,
       id: entryId,
-      sessionId: sid,
       devtoolsId,
       timing: currentTiming(),
       ...initiatorMeta,
     })
 
-    if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
-      const hot = await netCache.getHot(sid, req.method, cacheUrl, devtoolsId)
+    if (!disableCache && req.method === 'GET') {
+      const hot = await netCache.getHot(req.method, cacheUrl)
       if (hot) {
         const now = Date.now()
         timingMarks.startedAt = now
@@ -945,7 +914,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
           status: hot.status,
           headers: hot.headers,
         }
-        await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+        await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
           fromCache: true,
           bypass: true,
           source: 'cache',
@@ -967,7 +936,6 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
         failed: true,
         bypass: true,
         id: entryId,
-        sessionId: sid,
         devtoolsId,
         source: 'bypass',
         errorCode: isAbort
@@ -990,7 +958,6 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       networkLog.record(req, urlObj, res, startMs, {
         bypass: true,
         id: entryId,
-        sessionId: sid,
         devtoolsId,
         source: 'bypass',
         timing: currentTiming({ finishedAt: Date.now() }),
@@ -1006,7 +973,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
     }
 
     if (!res.body) {
-      await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, [], {
+      await storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, [], {
         bypass: true,
         source: 'bypass',
         hotKeyUrl: cacheUrl,
@@ -1018,7 +985,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
 
     finishEntry()
     const body = netCache.tapBodyCapture(res.body, (size, chunks) => {
-      void storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+      void storeNetworkResponse(req, urlObj, startMs, entryId, devtoolsId, disableCache, resOpt, chunks, {
         bypass: true,
         source: 'bypass',
         hotKeyUrl: cacheUrl,
@@ -1069,19 +1036,20 @@ async function onFetch(e) {
   await initDB()
   const req = e.request
   const urlStr = urlx.delHash(req.url)
-  const parsed = session.parseSessionFromUrl(urlStr)
-  session.setCurrentSessionId(parsed.sessionId)
-  session.touchSession(parsed.sessionId, e.clientId)
-
-  const origin = parsed.origin || new URL(urlStr).origin
-  const sessionRoot = session.buildSessionUrl(origin, parsed.sessionId, '')
-  const sessionHome = sessionRoot + 'index.html'
+  let reqUrl
+  try {
+    reqUrl = new URL(urlStr)
+  } catch {
+    return makeHtmlRes('invalid url: ' + urlStr, 500)
+  }
+  const origin = reqUrl.origin
+  const pathname = reqUrl.pathname
 
   if (
-    session.isViewerHomePath(parsed.restPath) ||
-    urlStr === sessionRoot.replace(/\/$/, '') ||
-    urlStr === sessionHome ||
-    (parsed.sessionId === session.DEFAULT_SESSION && session.isLegacyRootPath(parsed.restPath))
+    pathname === '/' ||
+    pathname === '/index.html' ||
+    pathname === '/viewer' ||
+    pathname === '/viewer.html'
   ) {
     let indexPath = mConf.assets_cdn + mConf.index_path
     if (!mConf.index_path) {
@@ -1091,30 +1059,28 @@ async function onFetch(e) {
     return makeHtmlRes(res.body)
   }
 
-  const legacyConf = origin + '/conf.js'
-  const legacyIcon = origin + '/favicon.ico'
   if (
-    urlStr === legacyConf ||
-    urlStr === legacyIcon ||
-    urlStr.endsWith('/conf.js') && parsed.restPath === '/conf.js' ||
-    urlStr.endsWith('/favicon.ico') && parsed.restPath === '/favicon.ico'
+    pathname === '/conf.js' ||
+    pathname === '/favicon.ico' ||
+    urlStr === origin + '/conf.js' ||
+    urlStr === origin + '/favicon.ico'
   ) {
-    return fetch(origin + parsed.restPath)
+    return fetch(origin + pathname)
   }
 
-  if (parsed.restPath.startsWith('/vendor/')) {
-    return fetch(mConf.assets_cdn + parsed.restPath.slice(1))
+  if (pathname.startsWith('/vendor/')) {
+    return fetch(mConf.assets_cdn + pathname.slice(1))
   }
 
-  if (parsed.restPath === path.HELPER.replace(path.ROOT, '/') ||
+  if (urlStr === path.HELPER ||
       urlStr.endsWith('__sys__/helper.js')) {
     return fetch(self['__FILE__'])
   }
 
   const assetsSuffix = '__sys__/assets/'
-  const assetsIdx = parsed.restPath.indexOf(assetsSuffix)
+  const assetsIdx = pathname.indexOf(assetsSuffix)
   if (assetsIdx !== -1) {
-    const filePath = parsed.restPath.substr(assetsIdx + assetsSuffix.length)
+    const filePath = pathname.substr(assetsIdx + assetsSuffix.length)
     return fetch(mConf.assets_cdn + filePath)
   }
 
@@ -1123,6 +1089,11 @@ async function onFetch(e) {
     if (newUrl) {
       return Response.redirect(newUrl, 301)
     }
+  }
+
+  const isProxyPath = pathname.includes('/-----')
+  if (!isProxyPath) {
+    return makeHtmlRes('invalid url: ' + urlStr, 500)
   }
 
   let targetUrlStr = urlx.decUrlStrAbs(urlStr)
@@ -1154,7 +1125,7 @@ async function onFetch(e) {
     } = handler
 
     if (redir) {
-      const redirPrefix = session.getProxyPrefix(origin, parsed.sessionId)
+      const redirPrefix = urlx.getProxyPrefix(origin)
       return Response.redirect(redirPrefix + redir)
     }
     if (content) {
@@ -1168,7 +1139,7 @@ async function onFetch(e) {
   const targetUrlObj = urlx.newUrl(targetUrlStr)
 
   if (targetUrlObj) {
-    return proxy(e, targetUrlObj, parsed.sessionId)
+    return proxy(e, targetUrlObj)
   }
   return makeHtmlRes('invalid url: ' + targetUrlStr, 500)
 }
@@ -1278,22 +1249,17 @@ global.addEventListener('fetch', e => {
 global.addEventListener('message', e => {
   const [cmd, val] = e.data
   const src = e.source
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
-  session.setCurrentSessionId(srcSession)
-  session.touchSession(srcSession, src && src.id)
 
   switch (cmd) {
   case MSG.PAGE_COOKIE_PUSH:
-    cookie.set(val, srcSession)
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, [val], src.id, srcSession)
+    cookie.set(val)
+    sendMsgToPages(MSG.SW_COOKIE_PUSH, [val], src.id)
     break
 
   case MSG.PAGE_INFO_PULL:
     sendMsg(src, MSG.SW_INFO_PUSH, {
-      cookies: cookie.getNonHttpOnlyItems(srcSession),
+      cookies: cookie.getNonHttpOnlyItems(),
       conf: mConf,
-      sessionId: srcSession,
     })
     break
 
@@ -1302,41 +1268,103 @@ global.addEventListener('message', e => {
 
   case MSG.PAGE_STORAGE_SET: {
     const { siteOrigin, key, value, oldValue } = val
-    sessionStorage.setItem(srcSession, siteOrigin, key, value).then(() => {
+    sessionStorage.setItem(siteOrigin, key, value).then(() => {
       sendMsgToPages(MSG.SW_STORAGE_PUSH, {
         siteOrigin, key, value, oldValue,
-      }, src.id, srcSession)
+      }, src.id)
     })
     break
   }
 
   case MSG.PAGE_STORAGE_REMOVE: {
     const { siteOrigin, key, oldValue } = val
-    sessionStorage.removeItem(srcSession, siteOrigin, key).then(() => {
+    sessionStorage.removeItem(siteOrigin, key).then(() => {
       sendMsgToPages(MSG.SW_STORAGE_PUSH, {
         siteOrigin, key, value: null, oldValue,
-      }, src.id, srcSession)
+      }, src.id)
     })
     break
   }
 
   case MSG.PAGE_STORAGE_CLEAR: {
     const { siteOrigin } = val
-    sessionStorage.clear(srcSession, siteOrigin).then(() => {
+    sessionStorage.clear(siteOrigin).then(() => {
       sendMsgToPages(MSG.SW_STORAGE_PUSH, {
         siteOrigin, clear: true,
-      }, src.id, srcSession)
+      }, src.id)
     })
     break
   }
 
-  case MSG.PAGE_BRIDGE_SESSION_DESTROY:
-    session.destroySession(val.sessionId)
+  case MSG.PAGE_CLEAR_STATE:
+    e.waitUntil(Promise.all([
+      cookie.clearAll(),
+      sessionStorage.clearAll(),
+      network.clearUrlCache(),
+      netCache.clearAllNetworkCaches(),
+    ]).then(() => {
+      sendMsgToPages(MSG.SW_CLEAR_STATE, {})
+      sendMsg(src, MSG.SW_CLEAR_STATE, { done: true, id: val && typeof val.id === 'string' ? val.id : '' })
+    }).catch((err) => {
+      console.warn('[jsproxy] clear state fail:', err)
+      sendMsg(src, MSG.SW_CLEAR_STATE, {
+        done: true,
+        ok: false,
+        id: val && typeof val.id === 'string' ? val.id : '',
+        error: String(err),
+      })
+    }))
     break
 
-  case MSG.PAGE_SESSION_LIST:
-    sendMsg(src, MSG.SW_SESSION_LIST, session.listSessions())
+  case MSG.PAGE_COOKIE_LIST: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const items = cookie.getAllItems().map((item) => cookie.toPublicCookie(item))
+    sendMsg(src, MSG.SW_COOKIE_LIST_REPLY, { id: rpcId, ok: true, value: { cookies: items } })
     break
+  }
+
+  case MSG.PAGE_COOKIE_DELETE: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const cookieId = val && typeof val.cookieId === 'string' ? val.cookieId : ''
+    const deleted = cookieId ? cookie.deleteById(cookieId) : false
+    e.waitUntil(
+      cookie.flush().then(() => {
+        sendMsg(src, MSG.SW_COOKIE_DELETE_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { deleted },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_DELETE_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'COOKIE_DELETE_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_COOKIE_CLEAR: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const domain = val && typeof val.domain === 'string' ? val.domain : ''
+    e.waitUntil(
+      cookie.clearByDomain(domain || undefined).then((n) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { cleared: n },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_COOKIE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'COOKIE_CLEAR_FAILED' },
+        })
+      }),
+    )
+    break
+  }
 
   case MSG.PAGE_INIT_BEG:
     pageNotify(val, false)
@@ -1383,39 +1411,24 @@ global.addEventListener('message', e => {
     break
 
   case MSG.PAGE_NETWORK_OPTS: {
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
-  const payloadSession =
-    val && typeof val.sessionId === 'string' && val.sessionId ? val.sessionId : srcSession
   const devtoolsId = val && typeof val.devtoolsId === 'string' ? val.devtoolsId : ''
   if (devtoolsId && src && src.id) {
     netCache.registerClientOpts(src.id, {
       devtoolsId,
       disableCache: !!(val && val.disableCache),
-      sessionId: payloadSession || srcSession,
     })
   }
   break
   }
 
   case MSG.PAGE_NETWORK_INITIATOR_TIP: {
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
-  const tipSession =
-    val && typeof val.sessionId === 'string' && val.sessionId ? val.sessionId : srcSession
-  networkInitiator.registerTip(tipSession || srcSession, val)
+  networkInitiator.registerTip(val)
   break
   }
 
   case MSG.PAGE_NETWORK_BODY_READ: {
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
   const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
   const rpcId = val && typeof val.id === 'string' ? val.id : ''
-  const sid =
-    val && typeof val.sessionId === 'string' && val.sessionId
-      ? val.sessionId
-      : srcSession
   if (!entryId || !rpcId) {
     sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
       id: rpcId,
@@ -1424,7 +1437,7 @@ global.addEventListener('message', e => {
     })
     break
   }
-  netCache.getArchive(sid, entryId).then(async (res) => {
+  netCache.getArchive(entryId).then(async (res) => {
     if (!res) {
       sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
         id: rpcId,
@@ -1457,14 +1470,8 @@ global.addEventListener('message', e => {
   }
 
   case MSG.PAGE_NETWORK_BODY_READ_LINES: {
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
   const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
   const rpcId = val && typeof val.id === 'string' ? val.id : ''
-  const sid =
-    val && typeof val.sessionId === 'string' && val.sessionId
-      ? val.sessionId
-      : srcSession
   const metaOnly = !!(val && val.metaOnly)
   const fromLine = val && typeof val.fromLine === 'number' ? val.fromLine : undefined
   const toLine = val && typeof val.toLine === 'number' ? val.toLine : undefined
@@ -1498,7 +1505,7 @@ global.addEventListener('message', e => {
     }
   }
 
-  netCache.getArchive(sid, entryId).then(async (res) => {
+  netCache.getArchive(entryId).then(async (res) => {
     if (!res) {
       sendMsg(src, MSG.SW_NETWORK_BODY_LINES_REPLY, {
         id: rpcId,
@@ -1518,7 +1525,7 @@ global.addEventListener('message', e => {
       })
       return
     }
-    const index = await netCache.getOrBuildTextLineIndex(sid, entryId, res)
+    const index = await netCache.getOrBuildTextLineIndex(entryId, res)
     const range = netCache.readTextLineRange(
       index,
       typeof fromLine === 'number' ? fromLine : 0,
@@ -1551,22 +1558,15 @@ global.addEventListener('message', e => {
   }
 
   case MSG.PAGE_NETWORK_ARCHIVE_DROP: {
-  const dropSession = session.parseSessionFromUrl(src && src.url ? src.url : '').sessionId
   const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
   if (entryId) {
-    netCache.dropArchive(dropSession, entryId)
+    netCache.dropArchive(entryId)
   }
   break
   }
 
   case MSG.PAGE_NETWORK_HOT_PROBE: {
-  const srcUrl = src && src.url ? src.url : ''
-  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
   const rpcId = val && typeof val.id === 'string' ? val.id : ''
-  const sid =
-    val && typeof val.sessionId === 'string' && val.sessionId
-      ? val.sessionId
-      : srcSession
   const method = val && typeof val.method === 'string' ? val.method : 'GET'
   const url = val && typeof val.url === 'string' ? val.url : ''
   if (!rpcId || !url) {
@@ -1577,11 +1577,15 @@ global.addEventListener('message', e => {
     })
     break
   }
-  netCache.hasHot(sid, method, url).then((exists) => {
+  netCache.probeHot(method, url).then((result) => {
     sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
       id: rpcId,
       ok: true,
-      value: { exists: !!exists },
+      value: {
+        exists: !!result.exists,
+        fresh: !!result.fresh,
+        expiresAt: result.expiresAt,
+      },
     })
   }).catch((err) => {
     sendMsg(src, MSG.SW_NETWORK_HOT_PROBE_REPLY, {
@@ -1591,6 +1595,72 @@ global.addEventListener('message', e => {
     })
   })
   break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_STATS: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    e.waitUntil(
+      netCache.getNetworkCacheStats().then((stats) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_STATS_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: stats,
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_STATS_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_STATS_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_LIST: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const layer = val && val.layer === 'archive' ? 'archive' : 'hot'
+    const limit = val && typeof val.limit === 'number' ? val.limit : 200
+    e.waitUntil(
+      netCache.listNetworkCache(layer, limit).then((entries) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_LIST_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer, entries },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_LIST_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_LIST_FAILED' },
+        })
+      }),
+    )
+    break
+  }
+
+  case MSG.PAGE_NETWORK_CACHE_CLEAR: {
+    const rpcId = val && typeof val.id === 'string' ? val.id : ''
+    const layer =
+      val && (val.layer === 'hot' || val.layer === 'archive' || val.layer === 'all')
+        ? val.layer
+        : 'all'
+    e.waitUntil(
+      netCache.clearNetworkCacheLayer(layer).then(() => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: true,
+          value: { layer },
+        })
+      }).catch((err) => {
+        sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
+          id: rpcId,
+          ok: false,
+          error: { message: String(err), code: 'CACHE_CLEAR_FAILED' },
+        })
+      }),
+    )
+    break
   }
   }
 })
@@ -1606,7 +1676,10 @@ global.addEventListener('activate', e => {
   console.log('onactivate:', e)
   sendMsgToPages(MSG.SW_READY, 1)
 
-  e.waitUntil(clients.claim())
+  e.waitUntil(Promise.all([
+    clients.claim(),
+    netCache.rebuildHotIndex(),
+  ]))
 })
 
 

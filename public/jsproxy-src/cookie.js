@@ -1,5 +1,4 @@
 import {Database} from './database.js'
-import * as session from './session.js'
 
 
 function Cookie() {
@@ -102,11 +101,7 @@ class CookieDomainNode {
 
 
 class CookieJar {
-  /**
-   * @param {string} sessionId
-   */
-  constructor(sessionId) {
-    this.sessionId = sessionId
+  constructor() {
     /** @type {Map<string, Cookie>} */
     this.mIdCookieMap = new Map()
     this.mCookieNodeRoot = new CookieDomainNode()
@@ -118,12 +113,11 @@ class CookieJar {
    * @param {Cookie} item
    */
   set(item) {
-    item.sessionId = this.sessionId
-    const baseId = (item.secure ? ';' : '') +
+    item.sessionId = ''
+    item.id = (item.secure ? ';' : '') +
       item.name + ';' +
       item.domain +
       item.path
-    item.id = `${this.sessionId}$${baseId}`
 
     const matched = this.mIdCookieMap.get(item.id)
 
@@ -212,6 +206,52 @@ class CookieJar {
     return ret
   }
 
+  getAllItems() {
+    const ret = []
+    for (const item of this.mIdCookieMap.values()) {
+      if (item.isExpired) {
+        continue
+      }
+      ret.push(item)
+    }
+    return ret
+  }
+
+  /**
+   * @param {string} id
+   * @returns {boolean}
+   */
+  deleteById(id) {
+    const matched = this.mIdCookieMap.get(id)
+    if (!matched) {
+      return false
+    }
+    matched.isExpired = true
+    this.mIdCookieMap.delete(id)
+    this.mDirtySet.add(matched)
+    return true
+  }
+
+  /**
+   * @param {string} domain
+   * @returns {number}
+   */
+  clearByDomain(domain) {
+    if (!domain) {
+      return 0
+    }
+    let n = 0
+    for (const item of [...this.mIdCookieMap.values()]) {
+      if (item.domain === domain || isSubDomain(item.domain, domain) || isSubDomain(domain, item.domain)) {
+        item.isExpired = true
+        this.mIdCookieMap.delete(item.id)
+        this.mDirtySet.add(item)
+        n += 1
+      }
+    }
+    return n
+  }
+
   /**
    * @param {Database} db
    */
@@ -240,28 +280,63 @@ class CookieJar {
 }
 
 
-/** @type {Map<string, CookieJar>} */
-const mJars = new Map()
+/** @type {CookieJar} */
+const mJar = new CookieJar()
 
 /** @type {Database} */
 let mDB
 
-/**
- * @param {string} sessionId
- */
-function getJar(sessionId) {
-  const sid = sessionId || session.getCurrentSessionId()
-  let jar = mJars.get(sid)
-  if (!jar) {
-    jar = new CookieJar(sid)
-    mJars.set(sid, jar)
-  }
-  return jar
+
+export function getNonHttpOnlyItems() {
+  return mJar.getNonHttpOnlyItems()
 }
 
+/**
+ * @returns {Cookie[]}
+ */
+export function getAllItems() {
+  return mJar.getAllItems()
+}
 
-export function getNonHttpOnlyItems(sessionId) {
-  return getJar(sessionId).getNonHttpOnlyItems()
+/**
+ * Serialize cookie for DevTools (plain object).
+ * @param {Cookie} item
+ */
+export function toPublicCookie(item) {
+  return {
+    id: item.id,
+    name: item.name,
+    value: item.value,
+    domain: item.domain,
+    path: item.path,
+    expires: Number.isFinite(item.expires) ? item.expires : null,
+    secure: !!item.secure,
+    httpOnly: !!item.httpOnly,
+    sameSite: item.sameSite || '',
+    hostOnly: !!item.hostOnly,
+  }
+}
+
+/**
+ * @param {string} id
+ * @returns {boolean}
+ */
+export function deleteById(id) {
+  return mJar.deleteById(id)
+}
+
+/**
+ * @param {string} [domain]
+ * @returns {Promise<number>}
+ */
+export async function clearByDomain(domain) {
+  if (!domain) {
+    await clearAll()
+    return -1
+  }
+  const n = mJar.clearByDomain(domain)
+  await saveAll()
+  return n
 }
 
 
@@ -374,19 +449,17 @@ export function parse(str, urlObj, now) {
 
 /**
  * @param {Cookie} item
- * @param {string=} sessionId
  */
-export function set(item, sessionId) {
-  getJar(sessionId).set(item)
+export function set(item) {
+  mJar.set(item)
 }
 
 
 /**
  * @param {URL} urlObj
- * @param {string=} sessionId
  */
-export function query(urlObj, sessionId) {
-  return getJar(sessionId).query(urlObj)
+export function query(urlObj) {
+  return mJar.query(urlObj)
 }
 
 
@@ -399,11 +472,9 @@ export async function setDB(db) {
       mDB.delete('cookie', v.id)
       return true
     }
-    const sid = v.sessionId ||
-      (typeof v.id === 'string' && v.id.includes('$')
-        ? v.id.split('$')[0]
-        : session.DEFAULT_SESSION)
-    getJar(sid).set(v)
+    // Ignore legacy sessionId on records; re-key into the single jar.
+    v.sessionId = ''
+    mJar.set(v)
     return true
   })
 
@@ -415,33 +486,21 @@ async function saveAll() {
   if (!mDB) {
     return
   }
-  for (const jar of mJars.values()) {
-    await jar.save(mDB)
-  }
+  await mJar.save(mDB)
 }
 
 
-/**
- * @param {string} sessionId
- */
-export async function destroySession(sessionId) {
-  const jar = mJars.get(sessionId)
-  if (jar) {
-    if (mDB) {
-      for (const item of jar.mIdCookieMap.values()) {
-        await mDB.delete('cookie', item.id)
-      }
-    }
-    jar.clearMemory()
-    mJars.delete(sessionId)
-  } else if (mDB) {
+export async function clearAll() {
+  if (mDB) {
     await mDB.enum('cookie', v => {
-      const sid = v.sessionId ||
-        (typeof v.id === 'string' ? v.id.split('$')[0] : '')
-      if (sid === sessionId) {
-        mDB.delete('cookie', v.id)
-      }
+      mDB.delete('cookie', v.id)
       return true
     })
   }
+  mJar.clearMemory()
+}
+
+/** Persist dirty cookie jar entries to IDB now. */
+export async function flush() {
+  await saveAll()
 }

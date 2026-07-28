@@ -7,7 +7,6 @@
  * - 日志：[jsproxy] shell page inited（非 top page inited）
  */
 import * as env from './env.js'
-import * as session from './session.js'
 
 function isShellPage(win) {
   try {
@@ -21,7 +20,6 @@ function isShellPage(win) {
 
 function pageEnv(win) {
   env.setEnvType(env.ENV_PAGE)
-  session.setCurrentSessionId(session.parseSessionFromUrl(win.location.href).sessionId)
 
   if (isShellPage(win)) {
     win.__init__ = function (childWin) {

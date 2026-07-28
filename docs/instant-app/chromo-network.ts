@@ -4,12 +4,13 @@
  *
  * Network DevTools helper (VC_NETWORK_UPDATED + VC_NETWORK_READ + body cache).
  *
- * Hot cache (SW `vc-net-hot`) is session-scoped: key = sessionId + method + url
- * (normalized). Redirects keep the original request URL as the hot key.
+ * Hot cache (SW `vc-net-hot`) is global: key = method + url (normalized) with
+ * Cache-Control TTL. Redirects keep the original request URL as the hot key.
  * `devtoolsId` only binds Disable cache; it is not part of the hot key.
- * First eligible GET writes but does not hit (`hotStored` may be true);
- * subsequent same-URL GETs in the same session may return fromCache / source: 'cache'.
- * Use VC_NETWORK_HOT_PROBE to check whether SW already has an entry for a URL.
+ * Miss only when no fresh entry exists; fresh entries may return fromCache /
+ * source: 'cache' (including after restart if still within TTL).
+ * Use VC_NETWORK_HOT_PROBE for { exists, fresh, expiresAt? }.
+ * Clear via VC_CLEAR_STATE (not session destroy).
  */
 
 export type NetworkTiming = {
@@ -35,9 +36,10 @@ export type NetworkEntry = {
   bypass: boolean
   pending?: boolean
   hasBody?: boolean
-  /** Whether this response was written to session hot cache. */
+  /** Whether this response was written to the global hot cache. */
   hotStored?: boolean
   fromCache?: boolean
+  /** Parent-tab Disable-cache binding only; not part of hot key. */
   devtoolsId?: string
   requestHeaders?: Record<string, string>
   requestHeadersTruncated?: boolean

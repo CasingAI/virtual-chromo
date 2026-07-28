@@ -24,10 +24,6 @@ export const SW_CONF_CHANGE = 113
 export const PAGE_READY_CHECK = 200
 export const SW_READY = 201
 
-export const SW_SESSION_DESTROY = 300
-export const PAGE_BRIDGE_SESSION_DESTROY = 302
-export const PAGE_SESSION_LIST = 303
-export const SW_SESSION_LIST = 304
 export const SW_NETWORK_PUSH = 305
 export const PAGE_NETWORK_OPTS = 306
 export const PAGE_NETWORK_BODY_READ = 307
@@ -40,3 +36,19 @@ export const SW_NETWORK_HOT_PROBE_REPLY = 313
 export const PAGE_NETWORK_INITIATOR_TIP = 314
 export const PAGE_NETWORK_BODY_READ_LINES = 315
 export const SW_NETWORK_BODY_LINES_REPLY = 316
+export const PAGE_CLEAR_STATE = 320
+export const SW_CLEAR_STATE = 321
+
+export const PAGE_COOKIE_LIST = 322
+export const SW_COOKIE_LIST_REPLY = 323
+export const PAGE_COOKIE_DELETE = 324
+export const SW_COOKIE_DELETE_REPLY = 325
+export const PAGE_COOKIE_CLEAR = 326
+export const SW_COOKIE_CLEAR_REPLY = 327
+
+export const PAGE_NETWORK_CACHE_STATS = 328
+export const SW_NETWORK_CACHE_STATS_REPLY = 329
+export const PAGE_NETWORK_CACHE_LIST = 330
+export const SW_NETWORK_CACHE_LIST_REPLY = 331
+export const PAGE_NETWORK_CACHE_CLEAR = 332
+export const SW_NETWORK_CACHE_CLEAR_REPLY = 333

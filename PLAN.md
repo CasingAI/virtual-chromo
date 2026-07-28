@@ -51,7 +51,7 @@ flowchart TB
     ProxyAPI --> Page
 ```
 
-**双层 iframe**：外层 `viewer.html` 永不卸载，负责 SW 注册与 postMessage；内层 `#content` 加载 `/-----https://...` 代理页。
+**双层 iframe**：外层 `viewer.html` 永不卸载，负责 SW 注册与 postMessage；内层 `#content` 加载 `/-----https://...` 代理页。单 Chromo 实例为单用户全局浏览状态（无 BrowserContext session 分区）；Playwright 仅作协议能力对照，非运行时架构。
 
 ## 当前进度
 
@@ -67,7 +67,7 @@ flowchart TB
 - [x] `VC_LOAD_FAILED`、Console（`VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ`）
 - [x] 协议文档（[docs/protocol.md](docs/protocol.md)）与父项目 Demo（[docs/parent-demo.html](docs/parent-demo.html)）
 - [x] **被动导航**（build `20260727-v15`+）：子页点击 / 改 location 只上报 `VC_CLICK` / `VC_LOCATION`，不自主换页；唯一换页入口为父级 `VC_NAVIGATE`
-- [x] **Session / BrowserContext**（build `20260727-v17`+）：`/s/<sessionId>/` 路由、cookie/storage 分区、多 tab 同步、`VC_SESSION_*` 协议
+- [~] ~~**Session / BrowserContext**~~（build `20260727-v17` 曾引入；**`20260728-v12` 已移除**）：改为单用户全局 cookie / storage；清状态用 `VC_CLEAR_STATE`。Playwright `BrowserContext` 仅作 API 对照参考，**不是**本项目架构
 
 ### 进行中 / 待验证
 

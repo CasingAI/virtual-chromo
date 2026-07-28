@@ -9,8 +9,7 @@ import * as env from './env.js'
 import * as client from './client.js'
 import * as vcReport from './vc-report.js'
 import * as passiveNav from './vc-passive-nav.js'
-import * as session from './session.js'
-import {handleStoragePush, clearSessionStorage, setStorageMessenger} from './storage.js'
+import {handleStoragePush, clearAllStorage, setStorageMessenger} from './storage.js'
 import {setInitiatorReporter} from './client.js'
 
 
@@ -136,9 +135,7 @@ export function init(win) {
   })
 
   // hook 页面和 Worker 相同的 API
-  const pageSession = session.parseSessionFromUrl(document.baseURI).sessionId
-  session.setCurrentSessionId(pageSession)
-  client.init(win, oriUrlObj.origin, pageSession)
+  client.init(win, oriUrlObj.origin)
 
   // 首次安装 document
   // 如果访问加载中的页面，返回 about:blank 空白页
@@ -166,11 +163,11 @@ export function init(win) {
     const [cmd, val] = e.data
     switch (cmd) {
     case MSG.SW_COOKIE_PUSH:
-      val.forEach(item => cookie.set(item, pageSession))
+      val.forEach(item => cookie.set(item))
       break
 
     case MSG.SW_INFO_PUSH:
-      val.cookies.forEach(item => cookie.set(item, pageSession))
+      val.cookies.forEach(item => cookie.set(item))
       route.setConf(val.conf)
       if (readyCallback) {
         readyCallback()
@@ -181,10 +178,8 @@ export function init(win) {
       handleStoragePush(val)
       break
 
-    case MSG.SW_SESSION_DESTROY:
-      if (val && val.sessionId === pageSession) {
-        clearSessionStorage(pageSession)
-      }
+    case MSG.SW_CLEAR_STATE:
+      clearAllStorage()
       break
 
     case MSG.SW_CONF_CHANGE:
@@ -392,13 +387,13 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   hook.prop(docProto, 'cookie',
     getter => function() {
       const {ori} = env.get(this)
-      return cookie.query(ori, pageSession)
+      return cookie.query(ori)
     },
     setter => function(val) {
       const {ori} = env.get(this)
       const item = cookie.parse(val, ori, Date.now())
       if (item) {
-        cookie.set(item, pageSession)
+        cookie.set(item)
         sendMsgToSw(MSG.PAGE_COOKIE_PUSH, item)
       }
     }

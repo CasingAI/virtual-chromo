@@ -77,8 +77,8 @@ async function fetchHandler(request, env) {
     )
   }
 
-  const sessionViewerMatch = urlObj.pathname.match(/^\/s\/[^/]+\/?$/)
-  if (sessionViewerMatch) {
+  // Legacy bookmarks /s/<id>/ → viewer
+  if (/^\/s\/[^/]+\/?$/.test(urlObj.pathname)) {
     return withNoStore(
       await env.ASSETS.fetch(
         new Request(new URL('/viewer', urlObj.origin), request),
