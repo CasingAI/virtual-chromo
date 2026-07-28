@@ -1,45 +1,167 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>新标签页</title>
   <style>
-    html, body {
+    :root {
+      --chrome-yellow: #FBBC05;
+      --chrome-red: #EA4335;
+      --chrome-blue: #4285F4;
+      --chrome-green: #34A853;
+      --ink: #2b2b2b;
+      --grid: #d8d8d8;
+      --paper: #f7f7f5;
+    }
+
+    html,
+    body {
       margin: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #fff;
+      background: var(--paper);
       color: #5f6368;
       font: 14px/1.5 system-ui, -apple-system, sans-serif;
     }
-    .blank {
-      display: grid;
-      place-items: center;
+
+    .canvas {
+      position: relative;
       width: 100%;
       height: 100%;
-      text-align: center;
-      padding: 24px;
-      box-sizing: border-box;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 22px 22px;
     }
-    h1 {
-      margin: 0 0 8px;
-      font: 400 22px/1.3 system-ui, -apple-system, sans-serif;
-      color: #202124;
+
+    .scene {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
     }
-    p {
+
+    .hint {
+      position: absolute;
+      left: 50%;
+      bottom: clamp(16px, 4vh, 32px);
+      transform: translateX(-50%);
       margin: 0;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
       color: #80868b;
+      font-size: 13px;
+      white-space: nowrap;
+      backdrop-filter: blur(4px);
+      z-index: 1;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 640px) {
+      .hint {
+        font-size: 12px;
+        white-space: nowrap;
+        text-align: center;
+        max-width: calc(100% - 32px);
+      }
     }
   </style>
 </head>
+
 <body>
-  <div class="blank">
-    <div>
-      <h1>新标签页</h1>
-      <p>在地址栏输入网址，按 Enter 开始浏览</p>
-    </div>
+  <div class="canvas">
+    <h1 class="sr-only">Chromo</h1>
+
+    <svg class="scene" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <filter id="roughen" x="-5%" y="-5%" width="110%" height="110%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="3" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+        <filter id="roughen-o" x="-8%" y="-8%" width="116%" height="116%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.045" numOctaves="2" result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>
+
+      <!-- yellow main block -->
+      <path filter="url(#roughen)" fill="#FBBC05" d="M 40 90
+           C 120 40, 260 30, 420 55
+           C 560 75, 620 120, 640 210
+           C 655 285, 630 380, 560 450
+           C 470 535, 300 590, 170 560
+           C 80 540, 20 470, 25 350
+           C 28 250, 10 150, 40 90 Z" />
+
+      <!-- red blob (top right) -->
+      <path filter="url(#roughen)" fill="#EA4335" d="M 700 55
+           C 790 25, 910 40, 960 110
+           C 1005 175, 990 250, 920 290
+           C 840 335, 720 320, 670 260
+           C 625 205, 630 95, 700 55 Z" />
+
+      <!-- green vertical blob (bottom right) -->
+      <path transform="translate(0, 11)" filter="url(#roughen)" fill="#34A853" d="M 730 470
+           C 790 455, 870 460, 910 500
+           C 945 535, 950 590, 930 640
+           C 910 690, 850 710, 790 695
+           C 735 682, 690 640, 685 580
+           C 680 520, 680 485, 730 470 Z" />
+
+      <!-- hand-drawn divider lines -->
+      <g fill="none" stroke="#3a3a3a" stroke-linecap="round" stroke-linejoin="round" opacity="0.45">
+        <path stroke-width="3.8" d="M 660 450 C 710 460, 760 445, 810 440" />
+      </g>
+
+      <!-- Chromo logo: fixed viewBox coords, scales with shapes -->
+      <g transform="translate(500, 448) rotate(-1.5)">
+        <g transform="translate(-30, 11)">
+          <text y="-14" font-family="'Bradley Hand', 'Segoe Print', 'Snell Roundhand', 'Apple Chancery', cursive"
+            font-weight="700" letter-spacing="-2">
+            <tspan fill="#fff" font-size="171" x="-242">C</tspan>
+            <tspan fill="#2b2b2b" font-size="140" x="-132">h</tspan>
+            <tspan fill="#4285F4" font-size="140" x="-68">r</tspan>
+            <tspan fill="#EA4335" font-size="140" x="-8">o</tspan>
+            <tspan fill="#34A853" font-size="140" x="62">m</tspan>
+          </text>
+        </g>
+
+        <g transform="translate(168, -90) scale(0.952)">
+          <path filter="url(#roughen-o)" fill="#4285F4" fill-rule="evenodd" d="M 52 6
+               C 78 4, 97 22, 98 48
+               C 99 74, 82 96, 56 98
+               C 28 100, 6 82, 4 54
+               C 2 28, 18 8, 44 6
+               C 48 6, 50 6, 52 6 Z
+               M 52 20
+               C 35 21, 18 36, 17 54
+               C 16 72, 32 88, 51 89
+               C 70 90, 86 74, 87 54
+               C 88 36, 73 19, 52 20
+               C 52 20, 52 20, 52 20 Z" />
+        </g>
+      </g>
+    </svg>
+
+    <p class="hint">Chromo WebView Framework for Instant OS</p>
   </div>
 </body>
+
 </html>
