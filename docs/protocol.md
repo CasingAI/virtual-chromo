@@ -399,7 +399,7 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // ['VC_NETWORK_UPDATED', {
 //   latestId: 'uuid-of-newest-entry',
 //   count: 3,
-//   entry: { id, ts, method, url, status, type, size, duration, failed, bypass, pending, hasBody, fromCache, devtoolsId, requestHeaders, referrer, referrerPolicy, timing, source, sourceHost }
+//   entry: { id, ts, method, url, status, type, size, duration, failed, bypass, pending, hasBody, fromCache, devtoolsId, requestHeaders, referrer, referrerPolicy, timing, source, sourceHost, errorCode, errorText }
 // }]
 ```
 
@@ -520,7 +520,9 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // }]
 ```
 
-entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab 隔离键）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）。
+entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab 隔离键）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因）。
+
+viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_build, vc_version }` 交换 build；不一致时 bridge 进入 Fatal 状态并上报 `VC_ERROR { code: 'VERSION_MISMATCH' }`。
 
 响应头与 body 仍通过 `VC_NETWORK_BODY_READ` 单独拉取。完整 initiator 调用链 **不含**（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) Network DevTools 能力边界）。
 

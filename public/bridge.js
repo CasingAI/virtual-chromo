@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v3'
+  const BUILD = '20260728-v4'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -17,6 +17,8 @@
   const MSG_PAGE_NETWORK_BODY_READ = 307
   const MSG_SW_NETWORK_BODY_REPLY = 308
   const MSG_PAGE_NETWORK_ARCHIVE_DROP = 309
+  const MSG_PAGE_BUILD_GET = 310
+  const MSG_SW_BUILD_REPLY = 311
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -723,6 +725,9 @@
   /** @type {boolean} */
   let swReady = false
 
+  /** @type {boolean} */
+  let fatal = false
+
   /** @type {string|null} */
   let pendingNavigateUrl = null
 
@@ -803,6 +808,7 @@
       build: BUILD,
       sessionId,
       swReady,
+      fatal,
       loading,
       contentUrl: state.url || currentContentUrl || '',
       contentTitle: state.title || '',
@@ -844,23 +850,170 @@
     DebugPanel.init({ version: VERSION, build: BUILD })
     ensureNetworkDevtoolsId()
 
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!navigator.serviceWorker.controller) {
+        return
+      }
+      void assertBuildCompatible()
+    })
+
     if (swReady) {
-      emitReady()
       postNetworkOptsToSw()
+      flushReadyAfterVersionCheck()
     }
+  }
+
+  function flushReadyAfterVersionCheck() {
+    void assertBuildCompatible().then(function (ok) {
+      if (!ok) {
+        return
+      }
+      emitReady()
+      const queued = pendingNavigateUrl
+      pendingNavigateUrl = null
+      if (queued) {
+        vlog('info', ['flushing queued navigate:', queued])
+        applyNavigate(queued)
+      }
+    })
   }
 
   function swDidReady() {
     swReady = true
     vlog('info', ['service worker ready'])
     postNetworkOptsToSw()
-    emitReady()
-    const queued = pendingNavigateUrl
-    pendingNavigateUrl = null
-    if (queued) {
-      vlog('info', ['flushing queued navigate:', queued])
-      applyNavigate(queued)
+    flushReadyAfterVersionCheck()
+  }
+
+  /** @type {Promise<string|null>|null} */
+  let buildQueryInFlight = null
+  /** @type {number} */
+  let buildQuerySeq = 0
+
+  /**
+   * @returns {Promise<string|null>} vc_build string, null if unavailable/timeout, undefined sentinel via empty string handled upstream
+   */
+  function querySwBuild() {
+    if (buildQueryInFlight) {
+      return buildQueryInFlight
     }
+    buildQueryInFlight = new Promise(function (resolve) {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        resolve(null)
+        return
+      }
+      const reqId = 'bq-' + (++buildQuerySeq) + '-' + Date.now()
+      let settled = false
+      const timer = setTimeout(function () {
+        if (settled) {
+          return
+        }
+        settled = true
+        navigator.serviceWorker.removeEventListener('message', onReply)
+        vlog('warn', ['SW build query timed out'])
+        resolve(null)
+      }, 3000)
+      /**
+       * @param {MessageEvent} event
+       */
+      function onReply(event) {
+        if (!Array.isArray(event.data) || event.data[0] !== MSG_SW_BUILD_REPLY) {
+          return
+        }
+        const payload = event.data[1] && typeof event.data[1] === 'object' ? event.data[1] : {}
+        if (payload.reqId !== reqId) {
+          return
+        }
+        if (settled) {
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        navigator.serviceWorker.removeEventListener('message', onReply)
+        resolve(typeof payload.vc_build === 'string' ? payload.vc_build : '')
+      }
+      navigator.serviceWorker.addEventListener('message', onReply)
+      ctl.postMessage([MSG_PAGE_BUILD_GET, { reqId: reqId }])
+    }).finally(function () {
+      buildQueryInFlight = null
+    })
+    return buildQueryInFlight
+  }
+
+  /**
+   * @param {{ code?: string, message?: string, bridgeBuild?: string, swBuild?: string }} info
+   */
+  function enterFatalState(info) {
+    if (fatal) {
+      return
+    }
+    fatal = true
+    const bridgeBuild = info.bridgeBuild || BUILD
+    const swBuild = info.swBuild || ''
+    const message =
+      info.message ||
+      ('版本不匹配：bridge ' + bridgeBuild + ' vs SW ' + (swBuild || '(unknown)'))
+    const code = info.code || 'VERSION_MISMATCH'
+    vlog('error', [message, code])
+    if (contentFrame) {
+      try {
+        contentFrame.src = 'about:blank'
+      } catch (err) {
+        // ignore
+      }
+    }
+    postToParent('VC_ERROR', {
+      message: message,
+      code: code,
+      bridgeBuild: bridgeBuild,
+      swBuild: swBuild,
+    })
+    if (typeof window.__vcShowFatal === 'function') {
+      window.__vcShowFatal({
+        title: '此页面已停止运行',
+        message: message,
+        bridgeBuild: bridgeBuild,
+        swBuild: swBuild,
+        code: code,
+      })
+    }
+  }
+
+  /**
+   * @returns {Promise<boolean>} true if compatible
+   */
+  function assertBuildCompatible() {
+    if (fatal) {
+      return Promise.resolve(false)
+    }
+    return querySwBuild().then(function (swBuild) {
+      if (fatal) {
+        return false
+      }
+      if (swBuild == null) {
+        // No controller / timeout — do not fatal on transient miss
+        return true
+      }
+      if (!swBuild) {
+        vlog('warn', ['SW vc_build empty; skipping version check'])
+        return true
+      }
+      if (swBuild === BUILD) {
+        return true
+      }
+      enterFatalState({
+        code: 'VERSION_MISMATCH',
+        message:
+          'bridge 与 Service Worker 版本不一致，无法继续可靠代理。\nbridge: ' +
+          BUILD +
+          '\nSW: ' +
+          swBuild,
+        bridgeBuild: BUILD,
+        swBuild: swBuild,
+      })
+      return false
+    })
   }
 
   const MSG_SW_SESSION_DESTROY = 300
@@ -901,6 +1054,29 @@
 
     const [cmd, payload] = event.data
     vmsg('in', cmd, payload, { origin: event.origin })
+
+    if (fatal && cmd !== 'VC_PING' && cmd !== 'VC_RELOAD') {
+      if (cmd === 'VC_EVAL' || cmd === 'VC_CONSOLE_READ' || cmd === 'VC_NETWORK_READ' ||
+          cmd === 'VC_NETWORK_BODY_READ' || cmd === 'VC_SCREENSHOT') {
+        const data = payload && typeof payload === 'object' ? payload : {}
+        const id = typeof data.id === 'string' ? data.id : ''
+        const resultCmd =
+          cmd === 'VC_EVAL' ? 'VC_EVAL_RESULT'
+            : cmd === 'VC_CONSOLE_READ' ? 'VC_CONSOLE_READ_RESULT'
+              : cmd === 'VC_NETWORK_READ' ? 'VC_NETWORK_READ_RESULT'
+                : cmd === 'VC_NETWORK_BODY_READ' ? 'VC_NETWORK_BODY_READ_RESULT'
+                  : 'VC_SCREENSHOT_RESULT'
+        if (id) {
+          postToParent(resultCmd, {
+            id: id,
+            ok: false,
+            error: { message: 'viewer stopped: version mismatch', code: 'VERSION_MISMATCH' },
+          })
+        }
+      }
+      emitError('viewer stopped: version mismatch', 'VERSION_MISMATCH')
+      return
+    }
 
     switch (cmd) {
       case 'VC_NAVIGATE':
@@ -2232,7 +2408,7 @@
   }
 
   /**
-   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string }} raw
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string }} raw
    */
   function appendNetworkEntry(raw) {
     const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
@@ -2259,6 +2435,8 @@
       timing: raw.timing && typeof raw.timing === 'object' ? raw.timing : undefined,
       source: typeof raw.source === 'string' ? raw.source : '',
       sourceHost: typeof raw.sourceHost === 'string' ? raw.sourceHost : '',
+      errorCode: typeof raw.errorCode === 'string' ? raw.errorCode : '',
+      errorText: typeof raw.errorText === 'string' ? raw.errorText : '',
     }
     const existing = networkBuffer.findIndex((item) => item.id === id)
     if (existing >= 0) {
@@ -2647,5 +2825,6 @@
     init,
     swDidReady,
     emitError,
+    enterFatalState,
   }
 })()

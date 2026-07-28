@@ -37,6 +37,8 @@ export type NetworkEntry = {
   timing?: NetworkTiming
   source?: string
   sourceHost?: string
+  errorCode?: string
+  errorText?: string
 }
 
 export type NetworkReadResult = {

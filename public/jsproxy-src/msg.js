@@ -33,3 +33,5 @@ export const PAGE_NETWORK_OPTS = 306
 export const PAGE_NETWORK_BODY_READ = 307
 export const SW_NETWORK_BODY_REPLY = 308
 export const PAGE_NETWORK_ARCHIVE_DROP = 309
+export const PAGE_BUILD_GET = 310
+export const SW_BUILD_REPLY = 311

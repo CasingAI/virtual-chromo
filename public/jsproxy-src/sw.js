@@ -229,48 +229,87 @@ async function getUrlByClientId(id) {
 
 
 /**
- * @param {string} jsonStr 
- * @param {number} status 
- * @param {URL} urlObj 
+ * @param {string} jsonStr
+ * @param {number} status
+ * @param {URL} urlObj
+ * @returns {{ code: string, text: string, html: string }}
  */
-function parseGatewayError(jsonStr, status, urlObj) {
-  let ret = ''
-  const {
-    msg, addr, url
-  } = JSON.parse(jsonStr)
+function describeGatewayError(jsonStr, status, urlObj) {
+  let text = ''
+  let code = 'GATEWAY_ERROR'
+  let msg = ''
+  let addr = ''
+  let url = ''
+  try {
+    const parsed = JSON.parse(jsonStr)
+    msg = typeof parsed.msg === 'string' ? parsed.msg : ''
+    addr = typeof parsed.addr === 'string' ? parsed.addr : ''
+    url = typeof parsed.url === 'string' ? parsed.url : ''
+  } catch (err) {
+    return {
+      code: 'GATEWAY_PARSE_ERROR',
+      text: '网关错误信息无法解析',
+      html: '网关错误信息无法解析',
+    }
+  }
+
+  if (msg) {
+    code = 'GATEWAY_' + msg
+  } else {
+    code = 'GATEWAY_HTTP_' + status
+  }
 
   switch (status) {
   case 204:
     switch (msg) {
     case 'ORIGIN_NOT_ALLOWED':
-      ret = '当前域名不在服务器外链白名单'
+      text = '当前域名不在服务器外链白名单'
       break
     case 'CIRCULAR_DEPENDENCY':
-      ret = '当前请求出现循环代理'
+      text = '当前请求出现循环代理'
       break
     case 'SITE_MOVE':
-      ret = `当前站点移动到: <a href="${url}">${url}</a>`
+      text = '当前站点移动到: ' + url
       break
+    default:
+      text = msg || '网关拒绝请求'
     }
     break
   case 500:
-    ret = '代理服务器内部错误'
+    text = '代理服务器内部错误'
     break
   case 502:
     if (addr) {
-      ret = `代理服务器无法连接网站 ${urlObj.origin} (${addr})`
+      text = '代理服务器无法连接网站 ' + urlObj.origin + ' (' + addr + ')'
     } else {
-      ret = `代理服务器无法解析域名 ${urlObj.host}`
+      text = '代理服务器无法解析域名 ' + urlObj.host
     }
     break
   case 504:
-    ret = `代理服务器连接网站超时 ${urlObj.origin}`
+    text = '代理服务器连接网站超时 ' + urlObj.origin
     if (addr) {
-      ret += ` (${addr})`
+      text += ' (' + addr + ')'
     }
     break
+  default:
+    text = msg || ('网关错误 HTTP ' + status)
   }
-  return makeHtmlRes(ret)
+
+  let html = text
+  if (status === 204 && msg === 'SITE_MOVE' && url) {
+    html = '当前站点移动到: <a href="' + url + '">' + url + '</a>'
+  }
+  return { code, text, html }
+}
+
+/**
+ * @param {string} jsonStr
+ * @param {number} status
+ * @param {URL} urlObj
+ */
+function parseGatewayError(jsonStr, status, urlObj) {
+  const info = describeGatewayError(jsonStr, status, urlObj)
+  return makeHtmlRes(info.html)
 }
 
 
@@ -354,6 +393,8 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
         id: entryId,
         sessionId: sid,
         devtoolsId,
+        errorCode: 'ERR_PROXY_FETCH_FAILED',
+        errorText: '无法连接代理网关',
         timing: currentTiming({ finishedAt: Date.now() }),
       })
       if (isTurnstile) {
@@ -402,6 +443,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
 
     const gwErr = headers.get('gateway-err--')
     if (gwErr) {
+      const gwInfo = describeGatewayError(gwErr, status, urlObj)
       networkLog.record(req, urlObj, res, startMs, {
         failed: true,
         id: entryId,
@@ -409,6 +451,8 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
         devtoolsId,
         source: launchSource,
         sourceHost: launchSourceHost,
+        errorCode: gwInfo.code,
+        errorText: gwInfo.text,
         timing: currentTiming({ finishedAt: Date.now() }),
       })
       return parseGatewayError(gwErr, status, urlObj)
@@ -575,7 +619,10 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
       source = 'proxy'
     }
   }
-  networkLog.record(req, urlObj, {status: resOpt.status || 200}, startMs, {
+  networkLog.record(req, urlObj, {
+    status: resOpt.status || 200,
+    statusText: typeof resOpt.statusText === 'string' ? resOpt.statusText : '',
+  }, startMs, {
     id: entryId,
     sessionId: sid,
     devtoolsId,
@@ -837,6 +884,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
     try {
       res = await passthroughFetchRaw(req, urlStr, targetUrlStr)
     } catch (err) {
+      const isAbort = err && (err.name === 'AbortError' || err.code === 20)
       networkLog.record(req, urlObj, null, startMs, {
         failed: true,
         bypass: true,
@@ -844,6 +892,12 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
         sessionId: sid,
         devtoolsId,
         source: 'bypass',
+        errorCode: isAbort
+          ? 'ERR_ABORTED'
+          : 'ERR_' + ((err && err.name) || 'FETCH_FAILED'),
+        errorText: isAbort
+          ? '(canceled)'
+          : String((err && err.message) || err || 'fetch failed').slice(0, 200),
         timing: currentTiming({ finishedAt: Date.now() }),
       })
       throw err
@@ -1230,6 +1284,18 @@ global.addEventListener('message', e => {
   case MSG.PAGE_READY_CHECK:
     sendMsg(src, MSG.SW_READY)
     loadConf()
+    break
+
+  case MSG.PAGE_BUILD_GET:
+    sendMsg(src, MSG.SW_BUILD_REPLY, {
+      reqId: val && typeof val.reqId === 'string' ? val.reqId : '',
+      vc_build: (typeof self.VC_BUILD === 'string' && self.VC_BUILD)
+        || (mConf && mConf.vc_build)
+        || '',
+      vc_version: (typeof self.VC_VERSION === 'string' && self.VC_VERSION)
+        || (mConf && mConf.vc_version)
+        || '',
+    })
     break
 
   case MSG.PAGE_NETWORK_OPTS: {

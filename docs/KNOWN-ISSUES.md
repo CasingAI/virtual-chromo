@@ -262,7 +262,8 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
 - Preview：JSON 格式化、文本、图片 data URL；HTML 仅源码文本（防 XSS）
-- **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 说明
+- **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
+- **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
 ### DevTools 热缓存（build `20260728-v3`+）
 
@@ -272,13 +273,13 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - 仅 **GET、body ≤ 1MB、Disable cache 关闭** 时写入；**同 URL 第二次**请求才显示 `DevTools memory cache`
 - 响应头 **Cache-Control** 管浏览器 HTTP 缓存；**Served from 不反映** disk/memory cache
 
-### Viewer 更新检测（减少切回白屏）
+### Viewer 版本守护（build `20260728-v4`+）
 
-[`public/viewer.html`](../public/viewer.html)：
+[`public/viewer.html`](../public/viewer.html) + [`public/bridge.js`](../public/bridge.js)：
 
-- `visibilitychange` / `focus` 触发检查须距上次 ≥ **60s**
-- `reloadForUpdate` 后 **30s** 冷却（跨 reload 记入 sessionStorage）
-- bridge 指纹优先比 **ETag / Content-Length**，避免无谓读 body
+- **不再**周期性 `fetch('/bridge.js')` 或 `reg.update()` 轮询
+- bridge 在 `swDidReady` / `controllerchange` 时向 SW 查询 `VC_BUILD`；不一致则进入 **Fatal 崩溃页**（说明 +「重新加载」按钮），并 `VC_ERROR { code: 'VERSION_MISMATCH' }`
+- SW 更新仍走 `skipWaiting` + activate；激活后由 Fatal 页提示用户手动重载，不自动 silent reload
 
 ### 无法实现或仅占位
 
@@ -295,13 +296,15 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 ### 自检
 
-1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v3`+）
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v4`+）
 2. Network 点选请求：Headers 三区（General / Response / Request）可见
 3. 同 tab 刷新后同 URL 图片：第二次应出现 `cache` badge / `DevTools memory cache`
-4. 未命中时点 Served from 旁 **?**：说明含首次请求 / Disable cache / Cache-Control 无关等
-5. Chromo 切走再切回：不应无故整页白屏（除非 bridge/SW 真更新）
+4. 未命中时点 Served from 旁 **?**：条件诊断表（pass/fail），非长文说明
+5. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
 6. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
 7. 旧 bridge（无新字段）：抽屉不崩溃，Timing/Request Headers 显示空态
+8. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
+9. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复
 
 ---
 

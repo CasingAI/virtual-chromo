@@ -168,6 +168,8 @@ export function tapBodySize(body, onSize) {
  *   referrerPolicy?: string,
  *   source?: string,
  *   sourceHost?: string,
+ *   errorCode?: string,
+ *   errorText?: string,
  * }} [meta]
  */
 export function record(req, urlObj, res, startMs, meta) {
@@ -222,6 +224,21 @@ export function record(req, urlObj, res, startMs, meta) {
   const sourceHost =
     meta && typeof meta.sourceHost === 'string' ? meta.sourceHost : ''
 
+  let errorCode =
+    meta && typeof meta.errorCode === 'string' && meta.errorCode ? meta.errorCode : ''
+  let errorText =
+    meta && typeof meta.errorText === 'string' && meta.errorText ? meta.errorText : ''
+  if (failed && !errorCode) {
+    if (!res || status === 0) {
+      errorCode = 'ERR_FAILED'
+      errorText = errorText || 'Request failed'
+    } else if (status >= 400) {
+      errorCode = 'HTTP_' + status
+      const statusText = res && typeof res.statusText === 'string' ? res.statusText : ''
+      errorText = errorText || statusText || ('HTTP ' + status)
+    }
+  }
+
   emitter({
     id: (meta && meta.id) || makeId(),
     ts: startMs,
@@ -245,5 +262,7 @@ export function record(req, urlObj, res, startMs, meta) {
     timing,
     source: source || undefined,
     sourceHost: sourceHost || undefined,
+    errorCode: errorCode || undefined,
+    errorText: errorText || undefined,
   })
 }
