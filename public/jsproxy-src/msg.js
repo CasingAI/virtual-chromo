@@ -37,3 +37,4 @@ export const PAGE_BUILD_GET = 310
 export const SW_BUILD_REPLY = 311
 export const PAGE_NETWORK_HOT_PROBE = 312
 export const SW_NETWORK_HOT_PROBE_REPLY = 313
+export const PAGE_NETWORK_INITIATOR_TIP = 314

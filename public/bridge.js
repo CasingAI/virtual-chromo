@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v7'
+  const BUILD = '20260728-v8'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
@@ -21,6 +21,7 @@
   const MSG_SW_BUILD_REPLY = 311
   const MSG_PAGE_NETWORK_HOT_PROBE = 312
   const MSG_SW_NETWORK_HOT_PROBE_REPLY = 313
+  const MSG_PAGE_NETWORK_INITIATOR_TIP = 314
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -740,6 +741,57 @@
   /** @type {boolean} */
   let loading = false
 
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let loadingWatchdogTimer = null
+
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let swReadyWaitTimer = null
+
+  const LOADING_WATCHDOG_MS = 60000
+  const SW_READY_WAIT_MS = 15000
+
+  function clearLoadingWatchdog() {
+    if (loadingWatchdogTimer) {
+      clearTimeout(loadingWatchdogTimer)
+      loadingWatchdogTimer = null
+    }
+  }
+
+  function clearSwReadyWait() {
+    if (swReadyWaitTimer) {
+      clearTimeout(swReadyWaitTimer)
+      swReadyWaitTimer = null
+    }
+  }
+
+  function scheduleSwReadyWait() {
+    clearSwReadyWait()
+    swReadyWaitTimer = setTimeout(function () {
+      swReadyWaitTimer = null
+      if (swReady || !pendingNavigateUrl) {
+        return
+      }
+      const url = pendingNavigateUrl
+      pendingNavigateUrl = null
+      emitLoadFailed(url, 'Service Worker 未就绪（加载超时）', 'SW_NOT_READY')
+    }, SW_READY_WAIT_MS)
+  }
+
+  function scheduleLoadingWatchdog() {
+    clearLoadingWatchdog()
+    loadingWatchdogTimer = setTimeout(function () {
+      loadingWatchdogTimer = null
+      if (!loading) {
+        return
+      }
+      emitLoadFailed(
+        currentContentUrl || '',
+        '页面加载超时（' + Math.round(LOADING_WATCHDOG_MS / 1000) + 's）',
+        'LOAD_TIMEOUT',
+      )
+    }, LOADING_WATCHDOG_MS)
+  }
+
   /** @type {{ action: string, url: string, title: string, at: number }[]} */
   const navHistory = []
 
@@ -882,6 +934,7 @@
 
   function swDidReady() {
     swReady = true
+    clearSwReadyWait()
     vlog('info', ['service worker ready'])
     postNetworkOptsToSw()
     flushReadyAfterVersionCheck()
@@ -1082,6 +1135,7 @@
           })
         }
       }
+      emitLoading(false)
       emitError('viewer stopped: version mismatch', 'VERSION_MISMATCH')
       return
     }
@@ -1158,6 +1212,11 @@
    * @param {unknown} payload
    */
   function navigate(payload) {
+    if (fatal) {
+      emitLoading(false)
+      emitError('viewer stopped: version mismatch', 'VERSION_MISMATCH')
+      return
+    }
     if (!contentFrame) {
       return
     }
@@ -1175,9 +1234,11 @@
       vlog('info', ['navigate queued (SW not ready):', url])
       emitNavigating(url)
       emitLoading(true)
+      scheduleSwReadyWait()
       return
     }
 
+    clearSwReadyWait()
     pendingNavigateUrl = null
     applyNavigate(url)
   }
@@ -2530,7 +2591,7 @@
   }
 
   /**
-   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, hotStored?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string }} raw
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, hotStored?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} raw
    */
   function appendNetworkEntry(raw) {
     const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
@@ -2560,6 +2621,15 @@
       sourceHost: typeof raw.sourceHost === 'string' ? raw.sourceHost : '',
       errorCode: typeof raw.errorCode === 'string' ? raw.errorCode : '',
       errorText: typeof raw.errorText === 'string' ? raw.errorText : '',
+      initiatorKind: typeof raw.initiatorKind === 'string' ? raw.initiatorKind : '',
+      initiatorChain: Array.isArray(raw.initiatorChain)
+        ? raw.initiatorChain.filter((u) => typeof u === 'string')
+        : undefined,
+      initiatorStack: Array.isArray(raw.initiatorStack)
+        ? raw.initiatorStack.filter((u) => typeof u === 'string')
+        : undefined,
+      initiatorScriptUrl:
+        typeof raw.initiatorScriptUrl === 'string' ? raw.initiatorScriptUrl : '',
     }
     const existing = networkBuffer.findIndex((item) => item.id === id)
     if (existing >= 0) {
@@ -2963,6 +3033,11 @@
    */
   function emitLoading(nextLoading) {
     loading = nextLoading
+    if (nextLoading) {
+      scheduleLoadingWatchdog()
+    } else {
+      clearLoadingWatchdog()
+    }
     postToParent('VC_LOADING', {
       loading: nextLoading,
       url: currentContentUrl || undefined,

@@ -259,13 +259,14 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **Request Headers**（随 entry 上报；序列化软上限约 32KB）
 - **Response Headers + Body**（`VC_NETWORK_BODY_READ`，archive 按 entryId；存储无单条上限；读出为流式前缀约 64KB）
 - **Referrer / Referrer Policy**
+- **Initiator**：fetch / XHR / dynamic import() 调用栈 + 多跳 URL 链；Parser 类资源用 referrer 链兜底
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
 - Preview：JSON 格式化、文本；图片/音视频等二进制占位不渲染；超大文本显示 Cache 前缀 + truncated 提示
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
 
-### DevTools 热缓存（build `20260728-v7`+）
+### DevTools 热缓存（build `20260728-v8`+）
 
 - 热缓存 key：`sessionId + method + url`（**session 级持久**，跨页面 reload；URL 经 normalize；存于 Cache Storage `vc-net-hot`）
 - Redirect 不分裂 key：put/get 使用用户**原始请求 URL**
@@ -284,6 +285,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 - **不再**周期性 `fetch('/bridge.js')` 或 `reg.update()` 轮询
 - bridge 在 `swDidReady` / `controllerchange` 时向 SW 查询 `VC_BUILD`；不一致则进入 **Fatal 崩溃页**（说明 +「重新加载」按钮），并 `VC_ERROR { code: 'VERSION_MISMATCH' }`
+- **`viewer.html` 内 `sw.register('...?b=' + VC_BUILD)` 必须与 `bridge.js` / `conf.js` 同步**；漏改时浏览器可能仍跑旧 SW，导航会卡住或 Fatal 后 Chromo 标签仍显示「正在加载…」（build `20260728-v8`+ bridge 会在 Fatal/超时/SW 未就绪时强制 `VC_LOADING false`）
 - SW 更新仍走 `skipWaiting` + activate；激活后由 Fatal 页提示用户手动重载，不自动 silent reload
 
 ### 无法实现或仅占位
@@ -291,7 +293,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 | Chrome 能力 | 原因 | UI 行为 |
 |-------------|------|---------|
 | Remote Address | JS/SW 不暴露真实 TCP 远端 IP | 改为 **Served from**（cache / bypass / direct / cdn / proxy） |
-| 完整 Initiator 调用链（import 树） | 需 inject 侧采集调用栈并上报；当前无埋点 | 仅 referrer / 页面 URL → 资源 |
+| Parser 细粒度栈 / 静态 import / 未注入 iframe | HTML/CSS Parser 无 JS 栈；静态 `import` 与 passthrough 厂商脚本未经 jsfilter | Initiator 显示 referrer 链 + kind=parser；无 Call Stack |
 | DNS / SSL / Stalled / Proxy negotiation | 无 Chrome Resource Timing 同级 API | Timing 仅 SW 三段 |
 | Connection reuse / priority | 无 API | 不展示 |
 | Cookies 独立面板 | 未解析 Set-Cookie 树 | 可在 Response Headers 看原始头 |
@@ -301,12 +303,13 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 
 ### 自检
 
-1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v7`+）
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v8`+）
 2. Network 点选请求：Headers 三区（General / Response / Request）可见
 3. 选中 hasBody 请求：Preview **不应**永久「加载响应中…」（页面仍在加载其他资源时亦然）
 4. 同 session 刷新后同 URL：第二次应出现 `cache` badge / `DevTools memory cache`
 5. 首次 GET 未命中时点 Served from 旁 **?**：写入条件绿、`热缓存命中` 为灰色「本次写入」；可看到「SW 中已有该 URL 条目」
 6. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
+7. Console 执行 `fetch('/')`：Initiator 显示 kind=fetch 与调用栈；静态 `<script src>` 显示 kind=parser、无栈
 7. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
 8. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
 9. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复

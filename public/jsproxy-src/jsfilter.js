@@ -16,6 +16,12 @@ export function parseStr(code) {
     match = true
     return s + `...(self.__set_srcWin?__set_srcWin():[]), `
   })
+  // Dynamic import() → __vcImport( for Initiator stack capture.
+  // Avoid import.meta / static import by requiring word-boundary and no leading dot.
+  code = code.replace(/(^|[^\.\w$])import\s*\(/g, (_, prefix) => {
+    match = true
+    return prefix + '__vcImport('
+  })
   if (match) {
     return code
   }

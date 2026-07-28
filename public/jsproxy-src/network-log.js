@@ -171,6 +171,10 @@ export function tapBodySize(body, onSize) {
  *   sourceHost?: string,
  *   errorCode?: string,
  *   errorText?: string,
+ *   initiatorKind?: string,
+ *   initiatorChain?: string[],
+ *   initiatorStack?: string[],
+ *   initiatorScriptUrl?: string,
  * }} [meta]
  */
 export function record(req, urlObj, res, startMs, meta) {
@@ -185,10 +189,20 @@ export function record(req, urlObj, res, startMs, meta) {
   const failed = !pending && ((meta && meta.failed) || !res || status >= 400)
 
   const hdr = extractRequestHeaders(req && req.headers)
-  const requestHeaders =
+  /** @type {Record<string, string>} */
+  let requestHeaders =
     meta && meta.requestHeaders && typeof meta.requestHeaders === 'object'
       ? meta.requestHeaders
       : hdr.headers
+  // Never surface internal correlation header in DevTools Request Headers.
+  if (requestHeaders && requestHeaders['x-vc-initiator-id']) {
+    requestHeaders = { ...requestHeaders }
+    delete requestHeaders['x-vc-initiator-id']
+  }
+  if (requestHeaders && requestHeaders['X-VC-Initiator-Id']) {
+    requestHeaders = { ...requestHeaders }
+    delete requestHeaders['X-VC-Initiator-Id']
+  }
   const requestHeadersTruncated =
     meta && typeof meta.requestHeadersTruncated === 'boolean'
       ? meta.requestHeadersTruncated
@@ -266,5 +280,15 @@ export function record(req, urlObj, res, startMs, meta) {
     sourceHost: sourceHost || undefined,
     errorCode: errorCode || undefined,
     errorText: errorText || undefined,
+    initiatorKind:
+      meta && typeof meta.initiatorKind === 'string' ? meta.initiatorKind : undefined,
+    initiatorChain:
+      meta && Array.isArray(meta.initiatorChain) ? meta.initiatorChain : undefined,
+    initiatorStack:
+      meta && Array.isArray(meta.initiatorStack) ? meta.initiatorStack : undefined,
+    initiatorScriptUrl:
+      meta && typeof meta.initiatorScriptUrl === 'string'
+        ? meta.initiatorScriptUrl
+        : undefined,
   })
 }

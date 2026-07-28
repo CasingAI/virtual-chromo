@@ -303,6 +303,10 @@ function initReqHdr(req, urlObj, cliUrlObj) {
     if (key === 'user-agent') {
       return
     }
+    // Internal correlation header — never forward to upstream gateway.
+    if (key === 'x-vc-initiator-id') {
+      return
+    }
     if (isSimpleReqHdr(key, val)) {
       reqHdr.set(key, val)
     } else {

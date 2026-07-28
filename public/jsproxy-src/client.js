@@ -12,6 +12,151 @@ const {
   construct,
 } = Reflect
 
+const INITIATOR_HEADER = 'X-VC-Initiator-Id'
+
+/** @type {((tip: object) => void) | null} */
+let initiatorReporter = null
+
+/**
+ * @param {(tip: object) => void} fn
+ */
+export function setInitiatorReporter(fn) {
+  initiatorReporter = typeof fn === 'function' ? fn : null
+}
+
+function makeTipId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // ignore
+  }
+  return String(Date.now()) + '-' + Math.random().toString(16).slice(2)
+}
+
+/**
+ * @returns {string[]}
+ */
+function captureStack() {
+  let raw = ''
+  try {
+    raw = new Error().stack || ''
+  } catch {
+    return []
+  }
+  const lines = raw.split('\n')
+  /** @type {string[]} */
+  const out = []
+  const skipRe =
+    /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|__vcImport|client\.js|chrome-extension:)/i
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim()
+    if (!line || line.indexOf('Error') === 0) {
+      continue
+    }
+    if (skipRe.test(line)) {
+      continue
+    }
+    out.push(line)
+    if (out.length >= 20) {
+      break
+    }
+  }
+  return out
+}
+
+/**
+ * @param {string[]} frames
+ * @param {Window|WorkerGlobalScope} global
+ * @returns {string}
+ */
+function inferScriptUrl(frames, global) {
+  for (let i = 0; i < frames.length; i++) {
+    const m = String(frames[i]).match(/https?:\/\/[^\s)\]]+/i)
+    if (m) {
+      return m[0].replace(/:\d+:\d+$/, '')
+    }
+  }
+  try {
+    const doc = global.document
+    if (doc && doc.currentScript && doc.currentScript.src) {
+      return String(doc.currentScript.src)
+    }
+  } catch {
+    // ignore
+  }
+  return ''
+}
+
+/**
+ * Decode target URL so tip matches SW entry.url.
+ * @param {string} url
+ * @returns {string}
+ */
+function tipTargetUrl(url) {
+  if (!url) {
+    return ''
+  }
+  try {
+    const decoded = urlx.decUrlStrAbs(url)
+    if (decoded) {
+      return decoded
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    return new URL(url, typeof location !== 'undefined' ? location.href : undefined).href
+  } catch {
+    return String(url)
+  }
+}
+
+/**
+ * @param {HeadersInit|undefined} headers
+ * @param {string} id
+ * @returns {Headers}
+ */
+function withInitiatorHeader(headers, id) {
+  const h = new Headers(headers || undefined)
+  h.set(INITIATOR_HEADER, id)
+  return h
+}
+
+/**
+ * @param {{
+ *   kind: string,
+ *   method?: string,
+ *   url: string,
+ *   tipId?: string,
+ * }} opts
+ * @param {Window|WorkerGlobalScope} global
+ * @returns {string} tip id
+ */
+function reportInitiator(opts, global) {
+  const id = opts.tipId || makeTipId()
+  if (!initiatorReporter) {
+    return id
+  }
+  const stack = captureStack()
+  const scriptUrl = inferScriptUrl(stack, global)
+  try {
+    initiatorReporter({
+      id,
+      kind: opts.kind,
+      method: opts.method || 'GET',
+      url: tipTargetUrl(opts.url),
+      stack,
+      scriptUrl: tipTargetUrl(scriptUrl) || scriptUrl,
+      ts: Date.now(),
+    })
+  } catch {
+    // ignore
+  }
+  return id
+}
+
 
 /**
  * Hook 页面和 Worker 相同的 API
@@ -23,6 +168,24 @@ const {
 export function init(global, origin, sessionId) {
   const sid = sessionId || session.getCurrentSessionId()
   createStorage(global, origin, sid)
+
+  // Dynamic import() helper — jsfilter rewrites `import(` → `__vcImport(`
+  try {
+    global.__vcImport = function (specifier) {
+      const spec = String(specifier)
+      let absUrl = spec
+      try {
+        absUrl = new URL(spec, typeof location !== 'undefined' ? location.href : undefined).href
+      } catch {
+        absUrl = spec
+      }
+      reportInitiator({ kind: 'import', method: 'GET', url: absUrl }, global)
+      // webpackIgnore: keep native dynamic import (do not rewrite to chunk loader)
+      return import(/* webpackIgnore: true */ specifier)
+    }
+  } catch {
+    // ignore non-extensible globals
+  }
 
   // hook Location API
   const fakeLoc = createFakeLoc(global)
@@ -43,8 +206,37 @@ export function init(global, origin, sessionId) {
   // hook AJAX API
   const xhrProto = global['XMLHttpRequest'].prototype
   hook.func(xhrProto, 'open', oldFn => function(_0, url) {
-    if (url && !urlx.isCaptchaPassthroughUrl(String(url))) {
+    const method = arguments[0] ? String(arguments[0]).toUpperCase() : 'GET'
+    const rawUrl = url ? String(url) : ''
+    if (rawUrl && !urlx.isCaptchaPassthroughUrl(rawUrl)) {
       arguments[1] = urlx.encUrlStrRel(url, this)
+      const tipId = reportInitiator({
+        kind: 'xhr',
+        method,
+        url: rawUrl,
+      }, global)
+      this.__vcInitiatorId = tipId
+    } else {
+      this.__vcInitiatorId = ''
+    }
+    const ret = apply(oldFn, this, arguments)
+    if (this.__vcInitiatorId) {
+      try {
+        this.setRequestHeader(INITIATOR_HEADER, this.__vcInitiatorId)
+      } catch {
+        // Headers may not be writable until after open in some browsers; send hook retries.
+      }
+    }
+    return ret
+  })
+
+  hook.func(xhrProto, 'send', oldFn => function() {
+    if (this.__vcInitiatorId) {
+      try {
+        this.setRequestHeader(INITIATOR_HEADER, this.__vcInitiatorId)
+      } catch {
+        // already set or not allowed
+      }
     }
     return apply(oldFn, this, arguments)
   })
@@ -68,13 +260,26 @@ export function init(global, origin, sessionId) {
     if (urlx.isCaptchaPassthroughUrl(url)) {
       return apply(oldFn, this, arguments)
     }
+
+    const method =
+      (init && init.method) ||
+      (typeof input !== 'string' && input.method) ||
+      'GET'
+    const tipId = reportInitiator({
+      kind: 'fetch',
+      method: String(method).toUpperCase(),
+      url,
+    }, global)
+
     const newUrl = urlx.encUrlStrAbs(url)
-    if (newUrl === url) {
-      return apply(oldFn, this, arguments)
-    }
+    const targetUrl = newUrl === url ? url : newUrl
+
     if (typeof input === 'string') {
-      return apply(oldFn, this, [newUrl, init])
+      const headers = withInitiatorHeader(init && init.headers, tipId)
+      const nextInit = init ? { ...init, headers } : { headers }
+      return apply(oldFn, this, [targetUrl, nextInit])
     }
+
     /** @type {RequestInit} */
     const reqInit = {
       method: input.method,
@@ -95,7 +300,8 @@ export function init(global, origin, sessionId) {
     if (input.method !== 'GET' && input.method !== 'HEAD') {
       reqInit.body = input.body
     }
-    return apply(oldFn, this, [newUrl, reqInit])
+    reqInit.headers = withInitiatorHeader(reqInit.headers, tipId)
+    return apply(oldFn, this, [targetUrl, reqInit])
   })
 
 

@@ -522,11 +522,11 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // }]
 ```
 
-entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab Disable-cache 绑定键，不参与 hot key）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因）。
+entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab Disable-cache 绑定键，不参与 hot key）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因）, `initiatorKind`（`fetch` / `xhr` / `import` / `parser` / `other`）, `initiatorChain`（从文档根到资源的 URL 链）, `initiatorStack`（清洗后的 JS 栈帧，Parser 为空）, `initiatorScriptUrl`（调用方脚本 URL）。
 
 viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_build, vc_version }` 交换 build；不一致时 bridge 进入 Fatal 状态并上报 `VC_ERROR { code: 'VERSION_MISMATCH' }`。
 
-响应头与 body 仍通过 `VC_NETWORK_BODY_READ` 单独拉取。完整 initiator 调用链 **不含**（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) Network DevTools 能力边界）。
+响应头与 body 仍通过 `VC_NETWORK_BODY_READ` 单独拉取。Initiator：页面侧 hook fetch/XHR，jsfilter 将 `import(` 改写为 `__vcImport(`；经 `PAGE_NETWORK_INITIATOR_TIP` + 请求头 `X-VC-Initiator-Id`（上游剥离）关联到 entry。Parser / 静态 import / passthrough 脚本仅有 referrer 链（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)）。
 
 **source 取值**（替代 Chrome Remote Address，标明响应从哪来）：
 

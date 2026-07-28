@@ -5,6 +5,7 @@ import * as util from './util.js'
 import * as cookie from './cookie.js'
 import * as network from './network.js'
 import * as networkLog from './network-log.js'
+import * as networkInitiator from './network-initiator.js'
 import * as netCache from './network-response-cache.js'
 import * as fetchCtx from './network-fetch-context.js'
 import * as MSG from './msg.js'
@@ -341,6 +342,8 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
   const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
   const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
   const cacheUrl = hotKeyUrl || netCache.normalizeHotUrl(urlObj.href)
+  const pageUrl = cliUrlObj && cliUrlObj.href ? urlx.decUrlStrAbs(cliUrlObj.href) || cliUrlObj.href : ''
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, sid, pageUrl)
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
   const timingMarks = {}
 
@@ -360,6 +363,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
       sessionId: sid,
       devtoolsId,
       timing: currentTiming(),
+      ...initiatorMeta,
     })
 
     if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
@@ -379,6 +383,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
           source: 'cache',
           hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
         })
         return netCache.responseFromChunks(resOpt, chunks)
       }
@@ -395,6 +400,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
         errorCode: 'ERR_PROXY_FETCH_FAILED',
         errorText: '无法连接代理网关',
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
       })
       if (isTurnstile) {
         return new Response('load fail', {
@@ -453,6 +459,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
         errorCode: gwInfo.code,
         errorText: gwInfo.text,
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
       })
       return parseGatewayError(gwErr, status, urlObj)
     }
@@ -472,6 +479,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
           sourceHost: launchSourceHost,
           hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
         },
       )
     }
@@ -487,6 +495,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
         source: launchSource,
         sourceHost: launchSourceHost,
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
         ...(extra || {}),
       })
     }
@@ -597,7 +606,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId, ho
  * @param {boolean} disableCache
  * @param {ResponseInit} resOpt
  * @param {Uint8Array[]} chunks
- * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string, hotKeyUrl?: string }} [extra]
+ * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string, hotKeyUrl?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} [extra]
  */
 async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, extra) {
   const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
@@ -648,6 +657,44 @@ async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtools
     timing: extra && extra.timing
       ? extra.timing
       : networkLog.buildTiming(startMs, { finishedAt: Date.now() }),
+    initiatorKind: extra && typeof extra.initiatorKind === 'string' ? extra.initiatorKind : undefined,
+    initiatorChain: extra && Array.isArray(extra.initiatorChain) ? extra.initiatorChain : undefined,
+    initiatorStack: extra && Array.isArray(extra.initiatorStack) ? extra.initiatorStack : undefined,
+    initiatorScriptUrl:
+      extra && typeof extra.initiatorScriptUrl === 'string' ? extra.initiatorScriptUrl : undefined,
+  })
+}
+
+/**
+ * Resolve initiator once per request (consumes tip); reuse on later upserts.
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {string} sid
+ * @param {string=} pageUrl
+ */
+function resolveInitiatorForRequest(req, urlObj, sid, pageUrl) {
+  let tipId = ''
+  try {
+    tipId = req.headers.get(networkInitiator.INITIATOR_HEADER) || ''
+  } catch {
+    tipId = ''
+  }
+  let referrer = ''
+  try {
+    referrer = typeof req.referrer === 'string' ? req.referrer : ''
+    if (referrer && referrer !== 'about:client') {
+      referrer = urlx.decUrlStrAbs(referrer) || referrer
+    }
+  } catch {
+    referrer = ''
+  }
+  return networkInitiator.resolveInitiator({
+    sessionId: sid,
+    tipId,
+    url: urlObj.href,
+    referrer,
+    pageUrl: pageUrl || '',
+    destination: req.destination || '',
   })
 }
 
@@ -804,16 +851,19 @@ function passthroughFetchRaw(req, urlStr, targetUrlStr) {
   const cacheMode = fetchCtx.getFetchContext().disableCache
     ? 'no-store'
     : req.cache
+  /** Strip internal initiator correlation header before upstream. */
+  const headers = new Headers(req.headers)
+  headers.delete(networkInitiator.INITIATOR_HEADER)
   if (urlStr === targetUrlStr) {
-    if (cacheMode === req.cache) {
+    if (cacheMode === req.cache && !req.headers.has(networkInitiator.INITIATOR_HEADER)) {
       return fetch(req)
     }
-    return fetch(new Request(req, { cache: cacheMode }))
+    return fetch(new Request(req, { cache: cacheMode, headers }))
   }
   /** @type {RequestInit} */
   const init = {
     method: req.method,
-    headers: req.headers,
+    headers,
     credentials: req.credentials,
     cache: cacheMode,
     redirect: req.redirect,
@@ -848,6 +898,18 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
   const cacheUrl = netCache.normalizeHotUrl(urlObj.href)
   const startMs = Date.now()
   const entryId = networkLog.makeId()
+  let pageUrl = ''
+  if (clientId) {
+    try {
+      const cli = mIdUrlMap.get(clientId) || await getUrlByClientId(clientId)
+      if (cli) {
+        pageUrl = urlx.decUrlStrAbs(cli) || cli
+      }
+    } catch {
+      pageUrl = ''
+    }
+  }
+  const initiatorMeta = resolveInitiatorForRequest(req, urlObj, sid, pageUrl)
   /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
   const timingMarks = {}
 
@@ -868,6 +930,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
       sessionId: sid,
       devtoolsId,
       timing: currentTiming(),
+      ...initiatorMeta,
     })
 
     if (!disableCache && sid && sid !== 'default' && req.method === 'GET') {
@@ -888,6 +951,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
           source: 'cache',
           hotKeyUrl: cacheUrl,
           timing: currentTiming({ finishedAt: Date.now() }),
+          ...initiatorMeta,
         })
         return netCache.responseFromChunks(resOpt, chunks)
       }
@@ -913,6 +977,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
           ? '(canceled)'
           : String((err && err.message) || err || 'fetch failed').slice(0, 200),
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
       })
       throw err
     }
@@ -929,6 +994,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
         devtoolsId,
         source: 'bypass',
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
         ...(extra || {}),
       })
     }
@@ -945,6 +1011,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
         source: 'bypass',
         hotKeyUrl: cacheUrl,
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
       })
       return res
     }
@@ -956,6 +1023,7 @@ async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
         source: 'bypass',
         hotKeyUrl: cacheUrl,
         timing: currentTiming({ finishedAt: Date.now() }),
+        ...initiatorMeta,
       })
     })
     return new Response(body, resOpt)
@@ -1327,6 +1395,15 @@ global.addEventListener('message', e => {
       sessionId: payloadSession || srcSession,
     })
   }
+  break
+  }
+
+  case MSG.PAGE_NETWORK_INITIATOR_TIP: {
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  const tipSession =
+    val && typeof val.sessionId === 'string' && val.sessionId ? val.sessionId : srcSession
+  networkInitiator.registerTip(tipSession || srcSession, val)
   break
   }
 

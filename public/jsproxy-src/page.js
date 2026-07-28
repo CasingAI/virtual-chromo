@@ -11,6 +11,7 @@ import * as vcReport from './vc-report.js'
 import * as passiveNav from './vc-passive-nav.js'
 import * as session from './session.js'
 import {handleStoragePush, clearSessionStorage, setStorageMessenger} from './storage.js'
+import {setInitiatorReporter} from './client.js'
 
 
 const {
@@ -155,6 +156,9 @@ export function init(win) {
   }
 
   setStorageMessenger(sendMsgToSw)
+  setInitiatorReporter((tip) => {
+    sendMsgToSw(MSG.PAGE_NETWORK_INITIATOR_TIP, tip)
+  })
 
   // Register before PAGE_INFO_PULL so SW_INFO_PUSH cannot be missed (which
   // would clear pageWait's soft timeout via PAGE_INIT_BEG and hang forever).
