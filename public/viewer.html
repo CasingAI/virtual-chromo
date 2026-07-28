@@ -48,10 +48,21 @@
       'use strict'
 
       const UPDATE_INTERVAL_MS = 15000
+      const FOCUS_CHECK_MIN_MS = 60000
+      const RELOAD_COOLDOWN_MS = 30000
       const boot = document.getElementById('boot')
       let reloadingForUpdate = false
       /** @type {string} */
       let knownBridgeTag = ''
+      /** @type {number} */
+      let lastCheckAt = 0
+      /** @type {number} */
+      let lastReloadAt = 0
+      try {
+        lastReloadAt = +sessionStorage._vc_reload_at || 0
+      } catch (err) {
+        // ignore
+      }
 
       function hideBoot() {
         boot.classList.add('hidden')
@@ -62,13 +73,18 @@
         boot.classList.remove('hidden')
       }
 
-      function allowUnloadAndReload() {
+      function reloadForUpdate() {
         if (reloadingForUpdate) {
           return
         }
+        var now = Date.now()
+        if (lastReloadAt && now - lastReloadAt < RELOAD_COOLDOWN_MS) {
+          return
+        }
         reloadingForUpdate = true
+        lastReloadAt = now
         try {
-          sessionStorage.setItem('_vc_allow_unload', '1')
+          sessionStorage._vc_reload_at = String(now)
         } catch (err) {
           // ignore
         }
@@ -87,7 +103,7 @@
         } catch (err) {
           // ignore
         }
-        allowUnloadAndReload()
+        reloadForUpdate()
       }
 
       function onSwActive() {
@@ -114,46 +130,73 @@
         }
 
         function checkBridgeAsset() {
-          fetch('/bridge.js', { cache: 'no-store' })
+          fetch('/bridge.js', { cache: 'no-store', method: 'GET' })
             .then(function (res) {
               if (!res.ok) {
                 return
               }
-              var tag =
-                res.headers.get('etag') ||
-                res.headers.get('cf-ray') ||
-                res.headers.get('content-length') ||
-                ''
+              var etag = res.headers.get('etag') || ''
+              var len = res.headers.get('content-length') || ''
+              var headerTag = etag + '|' + len
+              // Prefer header-only fingerprint when ETag or Content-Length exist.
+              if (etag || len) {
+                var headerFp = 'h:' + headerTag
+                if (!knownBridgeTag) {
+                  knownBridgeTag = headerFp
+                  return res.body && typeof res.body.cancel === 'function'
+                    ? res.body.cancel().catch(function () {})
+                    : undefined
+                }
+                if (knownBridgeTag === headerFp) {
+                  return res.body && typeof res.body.cancel === 'function'
+                    ? res.body.cancel().catch(function () {})
+                    : undefined
+                }
+                knownBridgeTag = headerFp
+                reloadForUpdate()
+                return res.body && typeof res.body.cancel === 'function'
+                  ? res.body.cancel().catch(function () {})
+                  : undefined
+              }
               return res.text().then(function (body) {
-                var fingerprint = tag + ':' + body.length + ':' + body.slice(0, 64)
+                var fingerprint = 'b:' + body.length + ':' + body.slice(0, 64)
                 if (!knownBridgeTag) {
                   knownBridgeTag = fingerprint
                   return
                 }
                 if (fingerprint !== knownBridgeTag) {
                   knownBridgeTag = fingerprint
-                  allowUnloadAndReload()
+                  reloadForUpdate()
                 }
               })
             })
             .catch(function () {})
         }
 
-        function checkAll() {
+        function checkAll(force) {
+          var now = Date.now()
+          if (!force && lastCheckAt && now - lastCheckAt < FOCUS_CHECK_MIN_MS) {
+            return
+          }
+          lastCheckAt = now
           checkSw()
           checkBridgeAsset()
         }
 
-        checkAll()
-        setInterval(checkAll, UPDATE_INTERVAL_MS)
+        checkAll(true)
+        setInterval(function () {
+          checkAll(true)
+        }, UPDATE_INTERVAL_MS)
 
         document.addEventListener('visibilitychange', function () {
           if (document.visibilityState === 'visible') {
-            checkAll()
+            checkAll(false)
           }
         })
 
-        window.addEventListener('focus', checkAll)
+        window.addEventListener('focus', function () {
+          checkAll(false)
+        })
 
         if (reg.waiting) {
           reg.waiting.postMessage({ type: 'SKIP_WAITING' })
@@ -169,7 +212,7 @@
               // controllerchange will reload. If waiting sticks, nudge reload shortly.
               setTimeout(function () {
                 if (reg.waiting) {
-                  allowUnloadAndReload()
+                  reloadForUpdate()
                 }
               }, 1500)
             }
@@ -206,7 +249,7 @@
         }
 
         // Always register (even if a controller already exists) so we can call update().
-        sw.register('/sw.js?b=20260727-v48')
+        sw.register('/sw.js?b=20260728-v3')
           .then(function (reg) {
             watchForUpdates(reg)
             return onSwReady()
@@ -225,7 +268,7 @@
         if (!navigator.serviceWorker.controller) {
           return
         }
-        allowUnloadAndReload()
+        reloadForUpdate()
       })
     })()
   </script>

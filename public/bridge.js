@@ -7,12 +7,16 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260727-v48'
+  const BUILD = '20260728-v3'
   const PROXY_PREFIX = '/-----'
   const MSG_BRIDGE_DESTROY = 302
   const MSG_SESSION_LIST = 303
   const MSG_SW_SESSION_LIST = 304
   const MSG_SW_NETWORK_PUSH = 305
+  const MSG_PAGE_NETWORK_OPTS = 306
+  const MSG_PAGE_NETWORK_BODY_READ = 307
+  const MSG_SW_NETWORK_BODY_REPLY = 308
+  const MSG_PAGE_NETWORK_ARCHIVE_DROP = 309
   const MAX_CONSOLE_ENTRIES = 500
   const DEFAULT_CONSOLE_READ_LIMIT = 100
   const MAX_CONSOLE_READ_LIMIT = 500
@@ -269,7 +273,9 @@
           ' ' +
           (item.duration || 0) +
           'ms' +
-          (item.bypass ? ' [bypass]' : '')
+          (item.bypass ? ' [bypass]' : '') +
+          (item.fromCache ? ' [cache]' : '') +
+          (item.hasBody ? '' : '')
         const headEl = document.createElement('div')
         headEl.className = 'vcd-net__head'
         headEl.textContent = head
@@ -448,22 +454,6 @@
       })
     }
 
-    function installBeforeUnload() {
-      window.addEventListener('beforeunload', function (event) {
-        // Allow programmatic reloads (e.g. Service Worker update).
-        try {
-          if (sessionStorage.getItem('_vc_allow_unload') === '1') {
-            sessionStorage.removeItem('_vc_allow_unload')
-            return
-          }
-        } catch (err) {
-          // ignore
-        }
-        event.preventDefault()
-        event.returnValue = ''
-      })
-    }
-
     function buildUi() {
       root = document.createElement('div')
       root.id = 'vcd-root'
@@ -598,7 +588,7 @@
     }
 
     /**
-     * @param {{ beforeUnload?: boolean, version?: string, build?: string }} [options]
+     * @param {{ version?: string, build?: string }} [options]
      */
     function init(options) {
       options = options || {}
@@ -610,9 +600,6 @@
       }
       buildUi()
       hookConsole()
-      if (options.beforeUnload !== false) {
-        installBeforeUnload()
-      }
       addLog('info', ['debug panel ready', versionLabel || ''])
     }
 
@@ -761,6 +748,12 @@
   /** @type {number} */
   let networkPendingNotifyCount = 0
 
+  /** @type {string} */
+  let networkDevtoolsId = ''
+
+  /** @type {boolean} */
+  let networkDisableCache = false
+
   /**
    * @param {string} level
    * @param {unknown[]} args
@@ -819,6 +812,8 @@
       allowedOrigins:
         allowedOrigins && allowedOrigins.length ? allowedOrigins.join(', ') : '(all)',
       parentOrigin: window.parent === window ? '(top)' : '(embedded)',
+      networkDisableCache: networkDisableCache,
+      networkDevtoolsId: networkDevtoolsId || ensureNetworkDevtoolsId(),
       history: navHistory.slice(),
     }
   }
@@ -846,16 +841,19 @@
     contentFrame.addEventListener('error', onContentError)
 
     DebugPanel.setStateProvider(getDebugState)
-    DebugPanel.init({ beforeUnload: true, version: VERSION, build: BUILD })
+    DebugPanel.init({ version: VERSION, build: BUILD })
+    ensureNetworkDevtoolsId()
 
     if (swReady) {
       emitReady()
+      postNetworkOptsToSw()
     }
   }
 
   function swDidReady() {
     swReady = true
     vlog('info', ['service worker ready'])
+    postNetworkOptsToSw()
     emitReady()
     const queued = pendingNavigateUrl
     pendingNavigateUrl = null
@@ -880,6 +878,9 @@
     }
     if (cmd === MSG_SW_NETWORK_PUSH && payload && typeof payload === 'object') {
       appendNetworkEntry(payload)
+    }
+    if (cmd === MSG_SW_NETWORK_BODY_REPLY && payload && typeof payload === 'object') {
+      handleNetworkBodyReply(payload)
     }
   }
 
@@ -931,6 +932,12 @@
         break
       case 'VC_NETWORK_READ':
         readNetworkHistory(payload)
+        break
+      case 'VC_NETWORK_OPTIONS':
+        applyNetworkOptions(payload)
+        break
+      case 'VC_NETWORK_BODY_READ':
+        readNetworkBody(payload)
         break
       case 'VC_SESSION_CREATE':
         createSession(payload)
@@ -2063,13 +2070,174 @@
     })
   }
 
+  function ensureNetworkDevtoolsId() {
+    if (networkDevtoolsId) {
+      return networkDevtoolsId
+    }
+    // Align with instant-app: hot-cache key uses sessionId as devtoolsId.
+    // Avoid random UUID before VC_NETWORK_OPTIONS arrives (race → never hit).
+    if (sessionId && sessionId !== 'default') {
+      networkDevtoolsId = sessionId
+      return networkDevtoolsId
+    }
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        networkDevtoolsId = crypto.randomUUID()
+        return networkDevtoolsId
+      }
+    } catch {
+      // ignore
+    }
+    networkDevtoolsId = String(Date.now()) + '-' + Math.random().toString(16).slice(2)
+    return networkDevtoolsId
+  }
+
+  function postNetworkOptsToSw() {
+    const devtoolsId = ensureNetworkDevtoolsId()
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        return
+      }
+      ctl.postMessage([
+        MSG_PAGE_NETWORK_OPTS,
+        {
+          devtoolsId: devtoolsId,
+          disableCache: networkDisableCache,
+          sessionId: sessionId,
+        },
+      ])
+    })
+  }
+
   /**
-   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean }} raw
+   * @param {unknown} payload
+   */
+  function applyNetworkOptions(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    if (typeof data.devtoolsId === 'string' && data.devtoolsId) {
+      networkDevtoolsId = data.devtoolsId
+    } else {
+      ensureNetworkDevtoolsId()
+    }
+    if (typeof data.disableCache === 'boolean') {
+      networkDisableCache = data.disableCache
+    }
+    postNetworkOptsToSw()
+  }
+
+  function dropArchiveEntry(entryId) {
+    if (!entryId) {
+      return
+    }
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        return
+      }
+      ctl.postMessage([MSG_PAGE_NETWORK_ARCHIVE_DROP, { entryId: entryId }])
+    })
+  }
+
+  /** @type {Map<string, (payload: unknown) => void>} */
+  const networkBodyWaiters = new Map()
+
+  /**
+   * @param {unknown} payload
+   */
+  function handleNetworkBodyReply(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    if (!id || !networkBodyWaiters.has(id)) {
+      return
+    }
+    const resolve = networkBodyWaiters.get(id)
+    networkBodyWaiters.delete(id)
+    if (typeof resolve === 'function') {
+      resolve(data)
+    }
+  }
+
+  /**
+   * @param {unknown} payload
+   */
+  function readNetworkBody(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    const id = typeof data.id === 'string' ? data.id : ''
+    const entryId = typeof data.entryId === 'string' ? data.entryId : ''
+
+    function replyError(message, code) {
+      postToParent('VC_NETWORK_BODY_READ_RESULT', {
+        id: id,
+        ok: false,
+        error: { message: message, code: code },
+      })
+    }
+
+    if (!id || !entryId) {
+      emitError('VC_NETWORK_BODY_READ requires id and entryId', 'NETWORK_BODY_BAD_REQUEST')
+      return
+    }
+
+    navigator.serviceWorker.ready.then(function () {
+      const ctl = navigator.serviceWorker.controller
+      if (!ctl) {
+        replyError('service worker not ready', 'NO_SW')
+        return
+      }
+
+      networkBodyWaiters.set(id, function (swPayload) {
+        const swData = swPayload && typeof swPayload === 'object' ? swPayload : {}
+        if (!swData.ok) {
+          postToParent('VC_NETWORK_BODY_READ_RESULT', {
+            id: id,
+            ok: false,
+            error: swData.error || { message: 'read failed', code: 'NETWORK_BODY_READ_FAILED' },
+          })
+          return
+        }
+
+        const value = swData.value && typeof swData.value === 'object' ? swData.value : {}
+        const body = value.body
+        let encoding = 'base64'
+        let encodedBody = ''
+
+        if (body instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(body)
+          let binary = ''
+          for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i])
+          }
+          encodedBody = btoa(binary)
+        } else if (typeof body === 'string') {
+          encoding = 'text'
+          encodedBody = body
+        }
+
+        postToParent('VC_NETWORK_BODY_READ_RESULT', {
+          id: id,
+          ok: true,
+          value: {
+            headers: value.headers || {},
+            body: encodedBody,
+            encoding: encoding,
+            truncated: !!value.truncated,
+            status: typeof value.status === 'number' ? value.status : 0,
+          },
+        })
+      })
+
+      ctl.postMessage([MSG_PAGE_NETWORK_BODY_READ, { id: id, entryId: entryId }])
+    })
+  }
+
+  /**
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string }} raw
    */
   function appendNetworkEntry(raw) {
     const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
     const entry = {
-      id,
+      id: id,
       ts: typeof raw.ts === 'number' ? raw.ts : Date.now(),
       method: typeof raw.method === 'string' ? raw.method : 'GET',
       url: typeof raw.url === 'string' ? raw.url : '',
@@ -2080,6 +2248,17 @@
       failed: !!raw.failed,
       bypass: !!raw.bypass,
       pending: !!raw.pending,
+      hasBody: !!raw.hasBody,
+      fromCache: !!raw.fromCache,
+      devtoolsId: typeof raw.devtoolsId === 'string' ? raw.devtoolsId : '',
+      requestHeaders:
+        raw.requestHeaders && typeof raw.requestHeaders === 'object' ? raw.requestHeaders : undefined,
+      requestHeadersTruncated: !!raw.requestHeadersTruncated,
+      referrer: typeof raw.referrer === 'string' ? raw.referrer : '',
+      referrerPolicy: typeof raw.referrerPolicy === 'string' ? raw.referrerPolicy : '',
+      timing: raw.timing && typeof raw.timing === 'object' ? raw.timing : undefined,
+      source: typeof raw.source === 'string' ? raw.source : '',
+      sourceHost: typeof raw.sourceHost === 'string' ? raw.sourceHost : '',
     }
     const existing = networkBuffer.findIndex((item) => item.id === id)
     if (existing >= 0) {
@@ -2087,7 +2266,10 @@
     } else {
       networkBuffer.push(entry)
       if (networkBuffer.length > MAX_NETWORK_ENTRIES) {
-        networkBuffer.shift()
+        const removed = networkBuffer.shift()
+        if (removed && removed.id) {
+          dropArchiveEntry(removed.id)
+        }
       }
       networkPendingNotifyCount += 1
     }

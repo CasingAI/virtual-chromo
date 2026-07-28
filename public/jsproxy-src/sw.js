@@ -5,6 +5,8 @@ import * as util from './util.js'
 import * as cookie from './cookie.js'
 import * as network from './network.js'
 import * as networkLog from './network-log.js'
+import * as netCache from './network-response-cache.js'
+import * as fetchCtx from './network-fetch-context.js'
 import * as MSG from './msg.js'
 import * as jsfilter from './jsfilter.js'
 import * as inject from './inject.js'
@@ -128,19 +130,22 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
   const reader = res.body.getReader()
   let injected = false
   let size = 0
+  /** @type {Uint8Array[]} */
+  const chunks = []
 
   const stream = new ReadableStream({
     async pull(controller) {
       if (!injected) {
         injected = true
 
-        // 注入页面顶部的代码
         const pageId = genPageId()
         const buf = inject.getHtmlCode(urlObj, pageId)
         size += buf.byteLength
+        if (size <= netCache.MAX_BODY_BYTES) {
+          chunks.push(new Uint8Array(buf))
+        }
         controller.enqueue(buf)
 
-        // 留一些时间给页面做异步初始化
         const done = await pageWait(pageId)
         if (!done) {
           console.warn('[jsproxy] page wait timeout. id: %d url: %s',
@@ -153,11 +158,14 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
       const r = await reader.read()
       if (r.done) {
         if (onComplete) {
-          onComplete(size)
+          onComplete(size, chunks)
         }
         controller.close()
       } else {
         size += r.value.byteLength
+        if (size <= netCache.MAX_BODY_BYTES) {
+          chunks.push(r.value)
+        }
         controller.enqueue(r.value)
       }
     }
@@ -285,195 +293,303 @@ networkLog.setEmitter(function (entry) {
  * @param {URL} cliUrlObj
  * @param {number} redirNum
  * @param {string=} sessionId
+ * @param {string=} clientId
  * @returns {Promise<Response>}
  */
-async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
+async function forward(req, urlObj, cliUrlObj, redirNum, sessionId, clientId) {
   const sid = sessionId || session.getCurrentSessionId()
   const isTurnstile = isPassthroughHost(urlObj.hostname)
   const startMs = Date.now()
   const entryId = networkLog.makeId()
+  const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
+  const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
+  const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
+  /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
+  const timingMarks = {}
 
-  networkLog.record(req, urlObj, null, startMs, {
-    pending: true,
-    id: entryId,
-    sessionId: sid,
+  /**
+   * @param {{ finishedAt?: number }} [extra]
+   */
+  const currentTiming = (extra) => networkLog.buildTiming(startMs, {
+    ...timingMarks,
+    ...(extra || {}),
   })
 
-  const r = await network.launch(req, urlObj, cliUrlObj)
-  if (!r) {
+  fetchCtx.setFetchContext({ disableCache })
+  try {
     networkLog.record(req, urlObj, null, startMs, {
-      failed: true,
+      pending: true,
       id: entryId,
       sessionId: sid,
+      devtoolsId,
+      timing: currentTiming(),
     })
-    if (isTurnstile) {
-      return new Response('load fail', {
-        status: 502,
-        headers: {
-          'access-control-allow-origin': '*',
-          'content-type': 'text/plain',
+
+    if (!disableCache && devtoolsId && req.method === 'GET') {
+      const hot = await netCache.getHot(sid, devtoolsId, req.method, urlObj.href)
+      if (hot) {
+        const now = Date.now()
+        timingMarks.startedAt = now
+        timingMarks.responseAt = now
+        const buf = await hot.arrayBuffer()
+        const chunks = [new Uint8Array(buf)]
+        const resOpt = {
+          status: hot.status,
+          headers: hot.headers,
+        }
+        await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+          fromCache: true,
+          source: 'cache',
+          timing: currentTiming({ finishedAt: Date.now() }),
+        })
+        return netCache.responseFromChunks(resOpt, chunks)
+      }
+    }
+
+    timingMarks.startedAt = Date.now()
+    const r = await network.launch(req, urlObj, cliUrlObj)
+    if (!r) {
+      networkLog.record(req, urlObj, null, startMs, {
+        failed: true,
+        id: entryId,
+        sessionId: sid,
+        devtoolsId,
+        timing: currentTiming({ finishedAt: Date.now() }),
+      })
+      if (isTurnstile) {
+        return new Response('load fail', {
+          status: 502,
+          headers: {
+            'access-control-allow-origin': '*',
+            'content-type': 'text/plain',
+          },
+        })
+      }
+      return makeHtmlRes('load fail')
+    }
+    timingMarks.responseAt = Date.now()
+    let {
+      res, status, headers, cookies
+    } = r
+    const launchSource = typeof r.source === 'string' ? r.source : 'proxy'
+    const launchSourceHost = typeof r.sourceHost === 'string' ? r.sourceHost : ''
+
+    if (cookies) {
+      sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, sid)
+    }
+
+    if (!status) {
+      status = res.status || 200
+    }
+
+    let headersMutable = true
+    if (!headers) {
+      headers = res.headers
+      headersMutable = false
+    }
+
+    /**
+     * @param {string} k
+     * @param {string} v
+     */
+    const setHeader = (k, v) => {
+      if (!headersMutable) {
+        headers = new Headers(headers)
+        headersMutable = true
+      }
+      headers.set(k, v)
+    }
+
+    const gwErr = headers.get('gateway-err--')
+    if (gwErr) {
+      networkLog.record(req, urlObj, res, startMs, {
+        failed: true,
+        id: entryId,
+        sessionId: sid,
+        devtoolsId,
+        source: launchSource,
+        sourceHost: launchSourceHost,
+        timing: currentTiming({ finishedAt: Date.now() }),
+      })
+      return parseGatewayError(gwErr, status, urlObj)
+    }
+
+    /** @type {ResponseInit} */
+    const resOpt = {status, headers}
+
+    /**
+     * @param {Uint8Array[]} chunks
+     * @param {{ fromCache?: boolean, failed?: boolean }} [extra]
+     */
+    const storeAndFinish = async (chunks, extra) => {
+      await storeNetworkResponse(
+        req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+          ...(extra || {}),
+          source: launchSource,
+          sourceHost: launchSourceHost,
+          timing: currentTiming({ finishedAt: Date.now() }),
         },
+      )
+    }
+
+    /**
+     * @param {{ size?: number, failed?: boolean, hasBody?: boolean, fromCache?: boolean }} [extra]
+     */
+    const finishEntry = (extra) => {
+      networkLog.record(req, urlObj, res, startMs, {
+        id: entryId,
+        sessionId: sid,
+        devtoolsId,
+        source: launchSource,
+        sourceHost: launchSourceHost,
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...(extra || {}),
       })
     }
-    return makeHtmlRes('load fail')
-  }
-  let {
-    res, status, headers, cookies
-  } = r
 
-  if (cookies) {
-    sendMsgToPages(MSG.SW_COOKIE_PUSH, cookies, undefined, sid)
-  }
-
-  if (!status) {
-    status = res.status || 200
-  }
-
-  let headersMutable = true
-  if (!headers) {
-    headers = res.headers
-    headersMutable = false
-  }
-
-  /**
-   * @param {string} k
-   * @param {string} v
-   */
-  const setHeader = (k, v) => {
-    if (!headersMutable) {
-      headers = new Headers(headers)
-      headersMutable = true
-    }
-    headers.set(k, v)
-  }
-
-  // 网关错误
-  const gwErr = headers.get('gateway-err--')
-  if (gwErr) {
-    networkLog.record(req, urlObj, res, startMs, {
-      failed: true,
-      id: entryId,
-      sessionId: sid,
-    })
-    return parseGatewayError(gwErr, status, urlObj)
-  }
-
-  /** @type {ResponseInit} */
-  const resOpt = {status, headers}
-
-  /**
-   * @param {{ size?: number, failed?: boolean }} [extra]
-   */
-  const finishEntry = (extra) => {
-    networkLog.record(req, urlObj, res, startMs, {
-      id: entryId,
-      sessionId: sid,
-      ...(extra || {}),
-    })
-  }
-
-  /**
-   * Count bytes actually streamed to the browser; upsert size when complete.
-   * @param {ReadableStream|null|undefined} body
-   * @returns {ReadableStream|null|undefined}
-   */
-  const bodyWithSize = (body) => {
-    if (!body) {
-      return body
-    }
-    return networkLog.tapBodySize(body, (size) => {
-      finishEntry({ size })
-    })
-  }
-
-  // 空响应
-  // https://fetch.spec.whatwg.org/#statuses
-  if (status === 101 ||
-      status === 204 ||
-      status === 205 ||
-      status === 304
-  ) {
-    finishEntry({ size: 0 })
-    return new Response(null, resOpt)
-  }
-
-  // 处理重定向
-  if (status === 301 ||
-      status === 302 ||
-      status === 303 ||
-      status === 307 ||
-      status === 308
-  ) {
-    const locStr = headers.get('location')
-    const locObj = locStr && urlx.newUrl(locStr, urlObj)
-    if (locObj) {
-      // 跟随模式，返回最终数据
-      if (req.redirect === 'follow') {
-        finishEntry({ size: 0 })
-        if (++redirNum === MAX_REDIR) {
-          return makeHtmlRes('重定向过多', 500)
-        }
-        return forward(req, locObj, cliUrlObj, redirNum, sid)
+    /**
+     * @param {ReadableStream|null|undefined} body
+     * @returns {ReadableStream|null|undefined}
+     */
+    const bodyWithCapture = (body) => {
+      if (!body) {
+        void storeAndFinish([])
+        return body
       }
-      // 不跟随模式（例如页面跳转），返回 30X 状态
-      setHeader('location', urlx.encUrlObj(locObj))
+      return netCache.tapBodyCapture(body, (size, chunks) => {
+        void storeAndFinish(chunks)
+      })
     }
 
-    finishEntry({ size: 0 })
-    // firefox, safari 保留内容会提示页面损坏
-    return new Response(null, resOpt)
-  }
+    if (status === 101 ||
+        status === 204 ||
+        status === 205 ||
+        status === 304
+    ) {
+      finishEntry({ size: 0 })
+      return new Response(null, resOpt)
+    }
 
-  //
-  // 提取 mime 和 charset（不存在则为 undefined）
-  // 可能存在多个段，并且值可能包含引号。例如：
-  // content-type: text/html; ...; charset="gbk"
-  //
-  const ctVal = headers.get('content-type') || ''
-  const [, mime, charset] = ctVal
-    .toLocaleLowerCase()
-    .match(/([^;]*)(?:.*?charset=['"]?([^'"]+))?/)
+    if (status === 301 ||
+        status === 302 ||
+        status === 303 ||
+        status === 307 ||
+        status === 308
+    ) {
+      const locStr = headers.get('location')
+      const locObj = locStr && urlx.newUrl(locStr, urlObj)
+      if (locObj) {
+        if (req.redirect === 'follow') {
+          finishEntry({ size: 0 })
+          if (++redirNum === MAX_REDIR) {
+            return makeHtmlRes('重定向过多', 500)
+          }
+          return forward(req, locObj, cliUrlObj, redirNum, sid, clientId)
+        }
+        setHeader('location', urlx.encUrlObj(locObj))
+      }
+
+      finishEntry({ size: 0 })
+      return new Response(null, resOpt)
+    }
+
+    const ctVal = headers.get('content-type') || ''
+    const [, mime, charset] = ctVal
+      .toLocaleLowerCase()
+      .match(/([^;]*)(?:.*?charset=['"]?([^'"]+))?/) || []
 
 
-  const type = req.destination
-  if (type === 'script' ||
-      type === 'worker' ||
-      type === 'sharedworker'
-  ) {
-    const buf = await res.arrayBuffer()
-    const ret = processJs(buf, charset)
+    const type = req.destination
+    if (type === 'script' ||
+        type === 'worker' ||
+        type === 'sharedworker'
+    ) {
+      const buf = await res.arrayBuffer()
+      const ret = processJs(buf, charset)
 
-    setHeader('content-type', 'text/javascript')
-    finishEntry({ size: ret.byteLength })
-    return new Response(ret, resOpt)
-  }
+      setHeader('content-type', 'text/javascript')
+      const chunks = [new Uint8Array(ret)]
+      await storeAndFinish(chunks)
+      return new Response(ret, resOpt)
+    }
 
-  if (req.mode === 'navigate' && mime === 'text/html') {
+    if (req.mode === 'navigate' && mime === 'text/html') {
+      if (isTurnstile) {
+        applyTurnstileCorsHeaders(setHeader)
+        finishEntry()
+        return new Response(bodyWithCapture(res.body), resOpt)
+      }
+      return processHtml(
+        res,
+        resOpt,
+        urlObj,
+        () => {
+          finishEntry()
+        },
+        (size, chunks) => {
+          void storeAndFinish(chunks)
+        },
+      )
+    }
+
     if (isTurnstile) {
       applyTurnstileCorsHeaders(setHeader)
-      finishEntry()
-      return new Response(bodyWithSize(res.body), resOpt)
     }
-    // Keep Network entry pending until pageWait unblocks HTML body streaming.
-    // Size is refined once the full HTML stream is consumed.
-    return processHtml(
-      res,
-      resOpt,
-      urlObj,
-      () => {
-        finishEntry()
-      },
-      (size) => {
-        finishEntry({ size })
-      },
-    )
+    finishEntry()
+    return new Response(bodyWithCapture(res.body), resOpt)
+  } finally {
+    fetchCtx.resetFetchContext()
   }
+}
 
-  if (isTurnstile) {
-    applyTurnstileCorsHeaders(setHeader)
+
+/**
+ * @param {Request} req
+ * @param {URL} urlObj
+ * @param {number} startMs
+ * @param {string} entryId
+ * @param {string} sid
+ * @param {string} devtoolsId
+ * @param {boolean} disableCache
+ * @param {ResponseInit} resOpt
+ * @param {Uint8Array[]} chunks
+ * @param {{ fromCache?: boolean, failed?: boolean, bypass?: boolean, timing?: object, source?: string, sourceHost?: string }} [extra]
+ */
+async function storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, extra) {
+  const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  let hasBody = false
+  if (netCache.shouldStoreBody(size) && chunks.length) {
+    const snapshot = netCache.responseFromChunks(resOpt, chunks)
+    hasBody = await netCache.putArchive(sid, entryId, snapshot)
+    if (!disableCache && devtoolsId && req.method === 'GET' && !(extra && extra.fromCache)) {
+      await netCache.putHot(sid, devtoolsId, req.method, urlObj.href, snapshot)
+    }
   }
-  finishEntry()
-  return new Response(bodyWithSize(res.body), resOpt)
+  let source = extra && typeof extra.source === 'string' ? extra.source : ''
+  if (!source) {
+    if (extra && extra.fromCache) {
+      source = 'cache'
+    } else if (extra && extra.bypass) {
+      source = 'bypass'
+    } else {
+      source = 'proxy'
+    }
+  }
+  networkLog.record(req, urlObj, {status: resOpt.status || 200}, startMs, {
+    id: entryId,
+    sessionId: sid,
+    devtoolsId,
+    size,
+    hasBody,
+    bypass: !!(extra && extra.bypass),
+    fromCache: !!(extra && extra.fromCache),
+    failed: !!(extra && extra.failed),
+    source,
+    sourceHost: extra && typeof extra.sourceHost === 'string' ? extra.sourceHost : '',
+    timing: extra && extra.timing
+      ? extra.timing
+      : networkLog.buildTiming(startMs, { finishedAt: Date.now() }),
+  })
 }
 
 
@@ -483,8 +599,12 @@ async function forward(req, urlObj, cliUrlObj, redirNum, sessionId) {
  * @param {string=} sessionId
  */
 async function proxy(e, urlObj, sessionId) {
-  // 使用 e.resultingClientId 有问题
   const id = e.clientId
+  const sid = sessionId || session.getCurrentSessionId()
+  const devtoolsCtx = netCache.resolveContext(id || '', sid)
+  if (e.resultingClientId && devtoolsCtx) {
+    netCache.bindClientDevtools(e.resultingClientId, devtoolsCtx.devtoolsId)
+  }
   let cliUrlStr
   if (id) {
     cliUrlStr = mIdUrlMap.get(id) || await getUrlByClientId(id)
@@ -493,10 +613,9 @@ async function proxy(e, urlObj, sessionId) {
     cliUrlStr = urlObj.href
   }
   const cliUrlObj = new URL(cliUrlStr)
-  const sid = sessionId || session.getCurrentSessionId()
 
   try {
-    return await forward(e.request, urlObj, cliUrlObj, 0, sid)
+    return await forward(e.request, urlObj, cliUrlObj, 0, sid, id)
   } catch (err) {
     console.error(err)
     return makeHtmlRes('前端脚本错误<br><pre>' + err.stack + '</pre>', 500)
@@ -541,6 +660,7 @@ function initDB() {
       await cookie.destroySession(sessionId)
       await sessionStorage.destroySession(sessionId)
       await network.destroySessionCache(sessionId)
+      await netCache.destroySessionCaches(sessionId)
       sendMsgToPages(MSG.SW_SESSION_DESTROY, { sessionId }, undefined, sessionId)
     })
     session.startIdleGc()
@@ -622,16 +742,21 @@ function applyTurnstileCorsHeaders(setHeader) {
  * @param {string} targetUrlStr
  */
 function passthroughFetchRaw(req, urlStr, targetUrlStr) {
+  const cacheMode = fetchCtx.getFetchContext().disableCache
+    ? 'no-store'
+    : req.cache
   if (urlStr === targetUrlStr) {
-    return fetch(req)
+    if (cacheMode === req.cache) {
+      return fetch(req)
+    }
+    return fetch(new Request(req, { cache: cacheMode }))
   }
-  // RequestInit cannot copy mode "navigate" (iframe / document loads).
   /** @type {RequestInit} */
   const init = {
     method: req.method,
     headers: req.headers,
     credentials: req.credentials,
-    cache: req.cache,
+    cache: cacheMode,
     redirect: req.redirect,
     referrer: req.referrer,
     referrerPolicy: req.referrerPolicy,
@@ -653,57 +778,120 @@ function passthroughFetchRaw(req, urlStr, targetUrlStr) {
  * @param {Request} req
  * @param {string} urlStr
  * @param {string} targetUrlStr
+ * @param {string=} clientId
  */
-async function passthroughFetch(req, urlStr, targetUrlStr) {
+async function passthroughFetch(req, urlStr, targetUrlStr, clientId) {
   const urlObj = urlx.newUrl(targetUrlStr) || new URL(targetUrlStr)
   const sid = session.getCurrentSessionId()
+  const devtoolsCtx = netCache.resolveContext(clientId || '', sid)
+  const devtoolsId = devtoolsCtx ? devtoolsCtx.devtoolsId : ''
+  const disableCache = devtoolsCtx ? devtoolsCtx.disableCache : false
   const startMs = Date.now()
   const entryId = networkLog.makeId()
-  networkLog.record(req, urlObj, null, startMs, {
-    pending: true,
-    bypass: true,
-    id: entryId,
-    sessionId: sid,
-  })
-  let res
-  try {
-    res = await passthroughFetchRaw(req, urlStr, targetUrlStr)
-  } catch (err) {
-    networkLog.record(req, urlObj, null, startMs, {
-      failed: true,
-      bypass: true,
-      id: entryId,
-      sessionId: sid,
-    })
-    throw err
-  }
+  /** @type {{ startedAt?: number, responseAt?: number, finishedAt?: number }} */
+  const timingMarks = {}
 
   /**
-   * @param {{ size?: number }} [extra]
+   * @param {{ finishedAt?: number }} [extra]
    */
-  const finishEntry = (extra) => {
-    networkLog.record(req, urlObj, res, startMs, {
+  const currentTiming = (extra) => networkLog.buildTiming(startMs, {
+    ...timingMarks,
+    ...(extra || {}),
+  })
+
+  fetchCtx.setFetchContext({ disableCache })
+  try {
+    networkLog.record(req, urlObj, null, startMs, {
+      pending: true,
       bypass: true,
       id: entryId,
       sessionId: sid,
-      ...(extra || {}),
+      devtoolsId,
+      timing: currentTiming(),
     })
-  }
 
-  if (!res.body) {
-    finishEntry({ size: 0 })
-    return res
-  }
+    if (!disableCache && devtoolsId && req.method === 'GET') {
+      const hot = await netCache.getHot(sid, devtoolsId, req.method, urlObj.href)
+      if (hot) {
+        const now = Date.now()
+        timingMarks.startedAt = now
+        timingMarks.responseAt = now
+        const buf = await hot.arrayBuffer()
+        const chunks = [new Uint8Array(buf)]
+        const resOpt = {
+          status: hot.status,
+          headers: hot.headers,
+        }
+        await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+          fromCache: true,
+          bypass: true,
+          source: 'cache',
+          timing: currentTiming({ finishedAt: Date.now() }),
+        })
+        return netCache.responseFromChunks(resOpt, chunks)
+      }
+    }
 
-  finishEntry()
-  const body = networkLog.tapBodySize(res.body, (size) => {
-    finishEntry({ size })
-  })
-  return new Response(body, {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-  })
+    timingMarks.startedAt = Date.now()
+    let res
+    try {
+      res = await passthroughFetchRaw(req, urlStr, targetUrlStr)
+    } catch (err) {
+      networkLog.record(req, urlObj, null, startMs, {
+        failed: true,
+        bypass: true,
+        id: entryId,
+        sessionId: sid,
+        devtoolsId,
+        source: 'bypass',
+        timing: currentTiming({ finishedAt: Date.now() }),
+      })
+      throw err
+    }
+    timingMarks.responseAt = Date.now()
+
+    /**
+     * @param {{ size?: number }} [extra]
+     */
+    const finishEntry = (extra) => {
+      networkLog.record(req, urlObj, res, startMs, {
+        bypass: true,
+        id: entryId,
+        sessionId: sid,
+        devtoolsId,
+        source: 'bypass',
+        timing: currentTiming({ finishedAt: Date.now() }),
+        ...(extra || {}),
+      })
+    }
+
+    const resOpt = {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    }
+
+    if (!res.body) {
+      await storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, [], {
+        bypass: true,
+        source: 'bypass',
+        timing: currentTiming({ finishedAt: Date.now() }),
+      })
+      return res
+    }
+
+    finishEntry()
+    const body = netCache.tapBodyCapture(res.body, (size, chunks) => {
+      void storeNetworkResponse(req, urlObj, startMs, entryId, sid, devtoolsId, disableCache, resOpt, chunks, {
+        bypass: true,
+        source: 'bypass',
+        timing: currentTiming({ finishedAt: Date.now() }),
+      })
+    })
+    return new Response(body, resOpt)
+  } finally {
+    fetchCtx.resetFetchContext()
+  }
 }
 
 
@@ -713,8 +901,8 @@ async function passthroughFetch(req, urlStr, targetUrlStr) {
  * @param {string} urlStr
  * @param {string} targetUrlStr
  */
-async function passthroughTurnstileScript(req, urlStr, targetUrlStr) {
-  const res = await passthroughFetch(req, urlStr, targetUrlStr)
+async function passthroughTurnstileScript(req, urlStr, targetUrlStr, clientId) {
+  const res = await passthroughFetch(req, urlStr, targetUrlStr, clientId)
   if (res.status !== 200) {
     return res
   }
@@ -807,10 +995,10 @@ async function onFetch(e) {
       return turnstilePreflightResponse(req)
     }
     if (req.destination === 'script' && urlx.isTurnstileApiJsUrl(urlStr)) {
-      return passthroughTurnstileScript(req, urlStr, targetUrlStr)
+      return passthroughTurnstileScript(req, urlStr, targetUrlStr, e.clientId)
     }
     if (shouldPassthroughCaptcha(req, targetUrlStr)) {
-      return passthroughFetch(req, urlStr, targetUrlStr)
+      return passthroughFetch(req, urlStr, targetUrlStr, e.clientId)
     }
   } else if (passthroughObj && isPassthroughHost(passthroughObj.hostname)) {
     // Turnstile non-asset requests: still allow CORS preflight helper path below via forward()
@@ -1043,6 +1231,75 @@ global.addEventListener('message', e => {
     sendMsg(src, MSG.SW_READY)
     loadConf()
     break
+
+  case MSG.PAGE_NETWORK_OPTS: {
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  const payloadSession =
+    val && typeof val.sessionId === 'string' && val.sessionId ? val.sessionId : srcSession
+  const devtoolsId = val && typeof val.devtoolsId === 'string' ? val.devtoolsId : ''
+  if (devtoolsId && src && src.id) {
+    netCache.registerClientOpts(src.id, {
+      devtoolsId,
+      disableCache: !!(val && val.disableCache),
+      sessionId: payloadSession || srcSession,
+    })
+  }
+  break
+  }
+
+  case MSG.PAGE_NETWORK_BODY_READ: {
+  const srcUrl = src && src.url ? src.url : ''
+  const srcSession = session.parseSessionFromUrl(srcUrl).sessionId
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  const rpcId = val && typeof val.id === 'string' ? val.id : ''
+  if (!entryId || !rpcId) {
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: 'entryId and id required', code: 'NETWORK_BODY_BAD_REQUEST' },
+    })
+    break
+  }
+  netCache.getArchive(srcSession, entryId).then(async (res) => {
+    if (!res) {
+      sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+        id: rpcId,
+        ok: false,
+        error: { message: 'body not found', code: 'NETWORK_BODY_NOT_FOUND' },
+      })
+      return
+    }
+    const buf = await res.arrayBuffer()
+    const truncated = buf.byteLength > netCache.MAX_BODY_BYTES
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: true,
+      value: {
+        headers: netCache.headersToObject(res.headers),
+        body: buf,
+        truncated,
+        status: res.status,
+      },
+    })
+  }).catch((err) => {
+    sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
+      id: rpcId,
+      ok: false,
+      error: { message: String(err), code: 'NETWORK_BODY_READ_FAILED' },
+    })
+  })
+  break
+  }
+
+  case MSG.PAGE_NETWORK_ARCHIVE_DROP: {
+  const dropSession = session.parseSessionFromUrl(src && src.url ? src.url : '').sessionId
+  const entryId = val && typeof val.entryId === 'string' ? val.entryId : ''
+  if (entryId) {
+    netCache.dropArchive(dropSession, entryId)
+  }
+  break
+  }
   }
 })
 

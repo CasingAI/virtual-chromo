@@ -1,6 +1,9 @@
 /** @type {((entry: object) => void) | null} */
 let emitter = null
 
+/** Soft limit for serialized request headers (bytes of JSON). */
+const MAX_REQUEST_HEADERS_BYTES = 32 * 1024
+
 /**
  * @param {(entry: object) => void} fn
  */
@@ -17,6 +20,72 @@ export function makeId() {
     // ignore
   }
   return String(Date.now()) + '-' + Math.random().toString(16).slice(2)
+}
+
+/**
+ * @param {Headers|null|undefined} headers
+ * @returns {{ headers: Record<string, string>, truncated: boolean }}
+ */
+export function extractRequestHeaders(headers) {
+  /** @type {Record<string, string>} */
+  const obj = {}
+  if (!headers || typeof headers.forEach !== 'function') {
+    return { headers: obj, truncated: false }
+  }
+  headers.forEach((val, key) => {
+    obj[key] = val
+  })
+  try {
+    const json = JSON.stringify(obj)
+    if (json.length <= MAX_REQUEST_HEADERS_BYTES) {
+      return { headers: obj, truncated: false }
+    }
+    /** @type {Record<string, string>} */
+    const trimmed = {}
+    let size = 2
+    for (const [key, val] of Object.entries(obj)) {
+      const piece = JSON.stringify(key) + ':' + JSON.stringify(val) + ','
+      if (size + piece.length > MAX_REQUEST_HEADERS_BYTES) {
+        return { headers: trimmed, truncated: true }
+      }
+      trimmed[key] = val
+      size += piece.length
+    }
+    return { headers: trimmed, truncated: true }
+  } catch {
+    return { headers: obj, truncated: false }
+  }
+}
+
+/**
+ * @param {number} queuedAt
+ * @param {{ startedAt?: number, responseAt?: number, finishedAt?: number }} [marks]
+ */
+export function buildTiming(queuedAt, marks) {
+  const startedAt = marks && typeof marks.startedAt === 'number' ? marks.startedAt : undefined
+  const responseAt = marks && typeof marks.responseAt === 'number' ? marks.responseAt : undefined
+  const finishedAt = marks && typeof marks.finishedAt === 'number' ? marks.finishedAt : undefined
+  /** @type {Record<string, number>} */
+  const timing = { queuedAt }
+  if (startedAt !== undefined) {
+    timing.startedAt = startedAt
+    timing.queueing = Math.max(0, startedAt - queuedAt)
+  }
+  if (responseAt !== undefined) {
+    timing.responseAt = responseAt
+    if (startedAt !== undefined) {
+      timing.waiting = Math.max(0, responseAt - startedAt)
+    }
+  }
+  if (finishedAt !== undefined) {
+    timing.finishedAt = finishedAt
+    if (responseAt !== undefined) {
+      timing.download = Math.max(0, finishedAt - responseAt)
+    } else if (startedAt !== undefined) {
+      timing.download = Math.max(0, finishedAt - startedAt)
+    }
+  }
+  return timing
 }
 
 /**
@@ -89,6 +158,16 @@ export function tapBodySize(body, onSize) {
  *   id?: string,
  *   sessionId?: string,
  *   size?: number,
+ *   hasBody?: boolean,
+ *   fromCache?: boolean,
+ *   devtoolsId?: string,
+ *   timing?: object,
+ *   requestHeaders?: Record<string, string>,
+ *   requestHeadersTruncated?: boolean,
+ *   referrer?: string,
+ *   referrerPolicy?: string,
+ *   source?: string,
+ *   sourceHost?: string,
  * }} [meta]
  */
 export function record(req, urlObj, res, startMs, meta) {
@@ -101,6 +180,47 @@ export function record(req, urlObj, res, startMs, meta) {
   const size = meta && typeof meta.size === 'number' && meta.size >= 0 ? meta.size : 0
 
   const failed = !pending && ((meta && meta.failed) || !res || status >= 400)
+
+  const hdr = extractRequestHeaders(req && req.headers)
+  const requestHeaders =
+    meta && meta.requestHeaders && typeof meta.requestHeaders === 'object'
+      ? meta.requestHeaders
+      : hdr.headers
+  const requestHeadersTruncated =
+    meta && typeof meta.requestHeadersTruncated === 'boolean'
+      ? meta.requestHeadersTruncated
+      : hdr.truncated
+
+  const referrer =
+    meta && typeof meta.referrer === 'string'
+      ? meta.referrer
+      : req && typeof req.referrer === 'string'
+        ? req.referrer
+        : ''
+  const referrerPolicy =
+    meta && typeof meta.referrerPolicy === 'string'
+      ? meta.referrerPolicy
+      : req && typeof req.referrerPolicy === 'string'
+        ? req.referrerPolicy
+        : ''
+
+  const timing =
+    meta && meta.timing && typeof meta.timing === 'object'
+      ? meta.timing
+      : buildTiming(startMs)
+
+  let source = meta && typeof meta.source === 'string' ? meta.source : ''
+  if (!source) {
+    if (meta && meta.fromCache) {
+      source = 'cache'
+    } else if (meta && meta.bypass) {
+      source = 'bypass'
+    } else if (!pending) {
+      source = 'proxy'
+    }
+  }
+  const sourceHost =
+    meta && typeof meta.sourceHost === 'string' ? meta.sourceHost : ''
 
   emitter({
     id: (meta && meta.id) || makeId(),
@@ -115,5 +235,15 @@ export function record(req, urlObj, res, startMs, meta) {
     bypass: !!(meta && meta.bypass),
     pending,
     sessionId: meta && meta.sessionId ? meta.sessionId : undefined,
+    hasBody: !!(meta && meta.hasBody),
+    fromCache: !!(meta && meta.fromCache),
+    devtoolsId: meta && meta.devtoolsId ? meta.devtoolsId : undefined,
+    requestHeaders,
+    requestHeadersTruncated: !!requestHeadersTruncated,
+    referrer,
+    referrerPolicy,
+    timing,
+    source: source || undefined,
+    sourceHost: sourceHost || undefined,
   })
 }

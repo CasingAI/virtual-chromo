@@ -2,8 +2,18 @@
  * Reference SDK for instant-app — copy to:
  *   instant-app/src/apps/chromo/chromo-network.ts
  *
- * Network DevTools helper (VC_NETWORK_UPDATED + VC_NETWORK_READ).
+ * Network DevTools helper (VC_NETWORK_UPDATED + VC_NETWORK_READ + body cache).
  */
+
+export type NetworkTiming = {
+  queuedAt?: number
+  startedAt?: number
+  responseAt?: number
+  finishedAt?: number
+  queueing?: number
+  waiting?: number
+  download?: number
+}
 
 export type NetworkEntry = {
   id: string
@@ -16,6 +26,17 @@ export type NetworkEntry = {
   duration: number
   failed: boolean
   bypass: boolean
+  pending?: boolean
+  hasBody?: boolean
+  fromCache?: boolean
+  devtoolsId?: string
+  requestHeaders?: Record<string, string>
+  requestHeadersTruncated?: boolean
+  referrer?: string
+  referrerPolicy?: string
+  timing?: NetworkTiming
+  source?: string
+  sourceHost?: string
 }
 
 export type NetworkReadResult = {
@@ -23,14 +44,28 @@ export type NetworkReadResult = {
   latestId: string | null
 }
 
+export type NetworkBodyReadResult = {
+  headers: Record<string, string>
+  body: string
+  encoding: 'base64' | 'text'
+  status: number
+  truncated?: boolean
+}
+
+export type NetworkOptions = {
+  devtoolsId?: string
+  disableCache?: boolean
+}
+
 const DEFAULT_RPC_TIMEOUT = 30_000
 
 export function createChromoNetwork(
   iframe: HTMLIFrameElement,
-  options: { targetOrigin?: string; timeout?: number } = {},
+  options: { targetOrigin?: string; timeout?: number; devtoolsId?: string } = {},
 ) {
   const targetOrigin = options.targetOrigin ?? '*'
   const timeout = options.timeout ?? DEFAULT_RPC_TIMEOUT
+  const devtoolsId = options.devtoolsId ?? crypto.randomUUID()
   let lastSeenId = ''
 
   function vcRpc<T>(resultCmd: string, cmd: string, payload: Record<string, unknown>): Promise<T> {
@@ -70,20 +105,38 @@ export function createChromoNetwork(
     })
   }
 
+  function setOptions(opts: NetworkOptions = {}) {
+    iframe.contentWindow?.postMessage(
+      [
+        'VC_NETWORK_OPTIONS',
+        {
+          devtoolsId: opts.devtoolsId ?? devtoolsId,
+          disableCache: !!opts.disableCache,
+        },
+      ],
+      targetOrigin,
+    )
+  }
+
   return {
+    devtoolsId,
+
     getLastSeenId(): string {
       return lastSeenId
     },
 
-    onUpdated(cb: (payload: { latestId: string; count: number }) => void): () => void {
+    setOptions,
+
+    onUpdated(cb: (payload: { latestId: string; count: number; entry?: NetworkEntry }) => void): () => void {
       function onMessage(event: MessageEvent) {
         if (event.source !== iframe.contentWindow) return
         if (!Array.isArray(event.data)) return
-        const [cmd, payload] = event.data as [string, { latestId?: string; count?: number }]
+        const [cmd, payload] = event.data as [string, { latestId?: string; count?: number; entry?: NetworkEntry }]
         if (cmd !== 'VC_NETWORK_UPDATED') return
         cb({
           latestId: payload?.latestId ?? '',
           count: payload?.count ?? 0,
+          entry: payload?.entry,
         })
       }
       window.addEventListener('message', onMessage)
@@ -99,6 +152,12 @@ export function createChromoNetwork(
         lastSeenId = value.latestId
       }
       return value ?? { entries: [], latestId: lastSeenId || null }
+    },
+
+    async readBody(entryId: string): Promise<NetworkBodyReadResult> {
+      return vcRpc<NetworkBodyReadResult>('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
+        entryId,
+      })
     },
 
     clearLocal(): void {

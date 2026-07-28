@@ -5,6 +5,7 @@ import * as util from './util'
 import * as tld from './tld.js'
 import * as cdn from './cdn.js'
 import * as session from './session.js'
+import * as fetchCtx from './network-fetch-context.js'
 import {Database} from './database.js'
 
 
@@ -352,6 +353,7 @@ export async function launch(req, urlObj, cliUrlObj) {
   const reqOpt = {
     mode: 'cors',
     method,
+    cache: fetchCtx.getFetchContext().disableCache ? 'no-store' : 'default',
   }
 
   if (method === 'POST' && !req.bodyUsed) {
@@ -373,7 +375,7 @@ export async function launch(req, urlObj, cliUrlObj) {
     // 非 HTTP 协议的资源，直接访问
     // 例如 youtube 引用了 chrome-extension: 协议的脚本
     const res = await fetch(req)
-    return {res}
+    return {res, source: 'native'}
   }
 
   const url = urlObj.href
@@ -403,7 +405,7 @@ export async function launch(req, urlObj, cliUrlObj) {
       const res = await cdn.proxyDirect(url)
       if (res) {
         setUrlCache(url, '', '', 0)
-        return {res}
+        return {res, source: 'direct'}
       }
     }
 
@@ -414,7 +416,7 @@ export async function launch(req, urlObj, cliUrlObj) {
       const res = await cdn.proxyStatic(urlHash, ver)
       if (res) {
         setUrlCache(url, '', '', 0)
-        return {res}
+        return {res, source: 'cdn'}
       }
     }
 
@@ -527,5 +529,5 @@ export async function launch(req, urlObj, cliUrlObj) {
     }
   }
 
-  return {res, status, headers, cookies}
+  return {res, status, headers, cookies, source: 'proxy', sourceHost: host || ''}
 }

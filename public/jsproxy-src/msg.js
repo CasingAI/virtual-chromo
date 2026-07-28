@@ -29,3 +29,7 @@ export const PAGE_BRIDGE_SESSION_DESTROY = 302
 export const PAGE_SESSION_LIST = 303
 export const SW_SESSION_LIST = 304
 export const SW_NETWORK_PUSH = 305
+export const PAGE_NETWORK_OPTS = 306
+export const PAGE_NETWORK_BODY_READ = 307
+export const SW_NETWORK_BODY_REPLY = 308
+export const PAGE_NETWORK_ARCHIVE_DROP = 309

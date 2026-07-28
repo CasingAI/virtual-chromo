@@ -224,6 +224,34 @@ await vcRpc('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', {
 })
 ```
 
+### `VC_NETWORK_OPTIONS`
+
+配置 Network 缓存行为（按**父页面 tab** 隔离）。每个嵌入实例应生成唯一 `devtoolsId`（UUID），与 `disableCache` 一并下发。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
+  devtoolsId: 'parent-tab-uuid',
+  disableCache: true,
+}], '*')
+```
+
+- `disableCache: true`：跳过热缓存，且 SW 出站 `fetch` 使用 `cache: 'no-store'`
+- `disableCache: false`：允许热缓存复用（按 `sessionId + devtoolsId + method + url`）
+- 未传 `devtoolsId` 时 bridge 会自动生成并在 `VC_READY` 后注册到 SW
+
+### `VC_NETWORK_BODY_READ`
+
+按 network entry UUID 读取**不可变**响应快照（archive 层，与 URL 无关）。
+
+```javascript
+await vcRpc('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
+  id: 'rpc-1',
+  entryId: 'network-entry-uuid',
+})
+```
+
+成功时 `value` 含 `headers`、`body`（base64）、`encoding: 'base64'`、`status`、`truncated?`。单条 body 上限 1MB；超出则不存储（`hasBody: false`）。
+
 ## iframe → 父（事件）
 
 ### 页面生命周期
@@ -371,7 +399,7 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // ['VC_NETWORK_UPDATED', {
 //   latestId: 'uuid-of-newest-entry',
 //   count: 3,
-//   entry: { id, ts, method, url, status, type, size, duration, failed, bypass, pending }
+//   entry: { id, ts, method, url, status, type, size, duration, failed, bypass, pending, hasBody, fromCache, devtoolsId, requestHeaders, referrer, referrerPolicy, timing, source, sourceHost }
 // }]
 ```
 
@@ -468,7 +496,23 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 //         duration: 45,
 //         failed: false,
 //         bypass: false,
-//         pending: false
+//         pending: false,
+//         hasBody: true,
+//         fromCache: false,
+//         devtoolsId: 'parent-tab-uuid',
+//         requestHeaders: { accept: '*/*' },
+//         requestHeadersTruncated: false,
+//         referrer: 'https://example.com/',
+//         referrerPolicy: 'strict-origin-when-cross-origin',
+//         timing: {
+//           queuedAt: 1710000000000,
+//           startedAt: 1710000000010,
+//           responseAt: 1710000000040,
+//           finishedAt: 1710000000045,
+//           queueing: 10,
+//           waiting: 30,
+//           download: 5,
+//         },
 //       },
 //     ],
 //     latestId: 'uuid-1'
@@ -476,9 +520,41 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 // }]
 ```
 
-entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）。
+entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab 隔离键）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）。
 
-v1 **不含** body / header / initiator。
+响应头与 body 仍通过 `VC_NETWORK_BODY_READ` 单独拉取。完整 initiator 调用链 **不含**（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) Network DevTools 能力边界）。
+
+**source 取值**（替代 Chrome Remote Address，标明响应从哪来）：
+
+| source | 含义 |
+|--------|------|
+| `cache` | DevTools 热缓存命中 |
+| `bypass` | Passthrough（如 Turnstile 厂商直连） |
+| `direct` | CORS 白名单主机直连 |
+| `cdn` | jsDelivr 静态 CDN |
+| `proxy` | 经加速网关代理（可带 `sourceHost`） |
+| `native` | 非 HTTP 协议原生 fetch |
+
+**timing 字段**（毫秒时间戳与相对时长）：
+
+| 字段 | 含义 |
+|------|------|
+| `queuedAt` | pending 记录时刻（通常等于 `ts`） |
+| `startedAt` | 开始上游 fetch 前 |
+| `responseAt` | 收到上游 Response 对象 |
+| `finishedAt` | body 流结束 / 写 archive 完成 |
+| `queueing` | `startedAt - queuedAt` |
+| `waiting` | `responseAt - startedAt`（近似 TTFB） |
+| `download` | `finishedAt - responseAt` |
+
+不含 DNS / SSL / Stalled / Proxy negotiation（SW 代理层无 Chrome Resource Timing 同级 API）。
+
+**缓存架构**（SW Cache API）：
+
+| 层 | Key | 用途 |
+|----|-----|------|
+| archive | `entryId` | DevTools 回看，不可变 |
+| hot | `sessionId + devtoolsId + method + url` | 可复用热缓存，Disable Cache 时跳过 |
 
 **DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。
 

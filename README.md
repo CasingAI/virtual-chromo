@@ -128,7 +128,7 @@ iframe.contentWindow.postMessage(['VC_SESSION_DESTROY', { sessionId: 'YOUR-SESSI
 | `VC_HISTORY` | SPA 页内路由（pushState / popstate） | 同步地址栏，不要 reload |
 | `VC_LOCATION` | 子页想整页换址 | 再决定是否 `VC_NAVIGATE` |
 
-完整协议见 [docs/protocol.md](docs/protocol.md)（含 `VC_EVAL` 在子页面执行 JS），示例见 [docs/parent-demo.html](docs/parent-demo.html)。已知限制见 [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)。
+完整协议见 [docs/protocol.md](docs/protocol.md)（含 `VC_EVAL` 在子页面执行 JS），示例见 [docs/parent-demo.html](docs/parent-demo.html)。已知限制见 [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)。与上游 jsproxy 的遗留耦合（外联 CDN、多节点等）见 [docs/jsproxy-legacy-decoupling.md](docs/jsproxy-legacy-decoupling.md)。
 
 ## 注意事项
 

@@ -1,6 +1,6 @@
 # jsproxy 原始源码（参考副本）
 
-来自 [EtherDream/jsproxy-browser](https://github.com/EtherDream/jsproxy-browser/tree/master/src/proxy/src) 的浏览器端源码，MIT 许可。用于对照 `public/bundle.js` 黑盒，**不参与运行时加载**。完整第三方归属见仓库根目录 [THIRD-PARTY.md](../../THIRD-PARTY.md)。
+来自 [EtherDream/jsproxy-browser](https://github.com/EtherDream/jsproxy-browser/tree/master/src/proxy/src) 的浏览器端源码，MIT 许可。用于对照 `public/bundle.js` 黑盒，**不参与运行时加载**。完整第三方归属见仓库根目录 [THIRD-PARTY.md](../../THIRD-PARTY.md)。与上游的运行时耦合项见 [docs/jsproxy-legacy-decoupling.md](../../docs/jsproxy-legacy-decoupling.md)。
 
 ## 与 bundle 的对应关系
 

@@ -249,8 +249,66 @@ Widget 本体为 **iframe** 加载 `cdn-cgi/challenge-platform/.../compact?lang=
 
 ---
 
+## Network DevTools 能力边界
+
+instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Preview / Response / Initiator / Timing），但底层是 **Service Worker 代理**，不是浏览器原生 Network 面板。
+
+### 已支持
+
+- 请求列表：method、URL、status、type、size、duration、pending、fromCache、bypass
+- **Request Headers**（随 entry 上报；序列化软上限约 32KB）
+- **Response Headers + Body**（`VC_NETWORK_BODY_READ`，archive 按 entryId，body ≤ 1MB）
+- **Referrer / Referrer Policy**
+- **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
+- **Server-Timing** 响应头解析（UI）
+- Preview：JSON 格式化、文本、图片 data URL；HTML 仅源码文本（防 XSS）
+- **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 说明
+
+### DevTools 热缓存（build `20260728-v3`+）
+
+- 热缓存 key：`sessionId + devtoolsId + method + url`
+- **devtoolsId 默认等于 sessionId**（与 instant-app 一致），避免 bridge 随机 UUID 与 parent 下发不一致导致永不命中
+- SW 在 `PAGE_NETWORK_OPTS` 到达前，也可用 sessionId 作为临时 fallback
+- 仅 **GET、body ≤ 1MB、Disable cache 关闭** 时写入；**同 URL 第二次**请求才显示 `DevTools memory cache`
+- 响应头 **Cache-Control** 管浏览器 HTTP 缓存；**Served from 不反映** disk/memory cache
+
+### Viewer 更新检测（减少切回白屏）
+
+[`public/viewer.html`](../public/viewer.html)：
+
+- `visibilitychange` / `focus` 触发检查须距上次 ≥ **60s**
+- `reloadForUpdate` 后 **30s** 冷却（跨 reload 记入 sessionStorage）
+- bridge 指纹优先比 **ETag / Content-Length**，避免无谓读 body
+
+### 无法实现或仅占位
+
+| Chrome 能力 | 原因 | UI 行为 |
+|-------------|------|---------|
+| Remote Address | JS/SW 不暴露真实 TCP 远端 IP | 改为 **Served from**（cache / bypass / direct / cdn / proxy） |
+| 完整 Initiator 调用链（import 树） | 需 inject 侧采集调用栈并上报；当前无埋点 | 仅 referrer / 页面 URL → 资源 |
+| DNS / SSL / Stalled / Proxy negotiation | 无 Chrome Resource Timing 同级 API | Timing 仅 SW 三段 |
+| Connection reuse / priority | 无 API | 不展示 |
+| Cookies 独立面板 | 未解析 Set-Cookie 树 | 可在 Response Headers 看原始头 |
+| WS 帧级详情 | 按 HTTP 记录，无帧协议 | 无 Frames Tab |
+| 超大 body | archive 上限 1MB | truncated 提示 |
+| 浏览器 HTTP disk/memory cache 状态 | 未接 Resource Timing | Served from「?」中说明 |
+
+### 自检
+
+1. 部署含新 `bundle.built.js` / `bridge.js` 的 Worker（`20260728-v3`+）
+2. Network 点选请求：Headers 三区（General / Response / Request）可见
+3. 同 tab 刷新后同 URL 图片：第二次应出现 `cache` badge / `DevTools memory cache`
+4. 未命中时点 Served from 旁 **?**：说明含首次请求 / Disable cache / Cache-Control 无关等
+5. Chromo 切走再切回：不应无故整页白屏（除非 bridge/SW 真更新）
+6. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
+7. 旧 bridge（无新字段）：抽屉不崩溃，Timing/Request Headers 显示空态
+
+---
+
 ## 长期修复方向（PLAN 阶段 3）
 
 - [x] 用 `jsproxy-src` + `bundle.built.js` 替换黑盒 `bundle.js`（进行中）
 - [x] 修复 `HTMLElement.prototype.click` connected 分支（v14+）
 - [ ] Debug Panel 可选接入 `consoleBuffer` 显示子页日志
+
+上游遗留耦合（jsDelivr 预缓存、多节点路由、Google 默认搜索等）的完整清单与处置优先级见 **[jsproxy-legacy-decoupling.md](jsproxy-legacy-decoupling.md)**。

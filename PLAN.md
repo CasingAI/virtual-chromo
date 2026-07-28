@@ -229,5 +229,6 @@ src/client/
 
 - [docs/protocol.md](docs/protocol.md) — postMessage 协议
 - [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — 已知问题（被动导航、inject、console 等）
+- [docs/jsproxy-legacy-decoupling.md](docs/jsproxy-legacy-decoupling.md) — jsproxy 遗留耦合与斩断清单（外联 CDN、多节点、adjustNav 等）
 - [docs/parent-demo.html](docs/parent-demo.html) — 父项目接入示例
 - [README.md](README.md) — 开发与部署
