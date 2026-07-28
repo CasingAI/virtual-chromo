@@ -1645,12 +1645,13 @@ global.addEventListener('message', e => {
       val && (val.layer === 'hot' || val.layer === 'archive' || val.layer === 'all')
         ? val.layer
         : 'all'
+    const origin = val && typeof val.origin === 'string' ? val.origin : ''
     e.waitUntil(
-      netCache.clearNetworkCacheLayer(layer).then(() => {
+      netCache.clearNetworkCacheLayer(layer, origin ? { origin } : undefined).then(() => {
         sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {
           id: rpcId,
           ok: true,
-          value: { layer },
+          value: { layer, origin: origin || undefined },
         })
       }).catch((err) => {
         sendMsg(src, MSG.SW_NETWORK_CACHE_CLEAR_REPLY, {

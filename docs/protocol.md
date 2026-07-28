@@ -26,7 +26,7 @@ virtual-chromo 作为 iframe 嵌入外层「浏览器壳」项目，双方通过
 父 → iframe：清空全局 cookie + storage + hot/archive/url-cache。  
 iframe → 父：`VC_CLEAR_STATE_DONE`（**等 SW 完成后再回**；payload 可含 `id` / `ok`）。
 
-### Application（存储管理，build `20260728-v14`+）
+### Application（存储管理，build `20260728-v15`+）
 
 RPC 均带 `id`，结果为 `*_RESULT`：`{ id, ok, value? | error? }`。
 
@@ -36,7 +36,7 @@ RPC 均带 `id`，结果为 `*_RESULT`：`{ id, ok, value? | error? }`。
 | `VC_STORAGE_LIST` / `SET` / `REMOVE` / `CLEAR` | `{ type: 'local'\|'session' }`；读写当前页 content 的 Storage hook |
 | `VC_IDB_LIST` / `DELETE` / `STORES` / `GET_ALL` | 当前页 IndexedDB（浅表预览） |
 | `VC_SITE_CACHE_LIST` / `KEYS` / `DELETE` | 站点 Cache Storage（前缀隔离后的逻辑名） |
-| `VC_NETWORK_CACHE_STATS` / `LIST` / `CLEAR` | Chromo hot/archive；CLEAR `{ layer: 'hot'\|'archive'\|'all' }` |
+| `VC_NETWORK_CACHE_STATS` / `LIST` / `CLEAR` | Chromo hot/archive；LIST hot 含 `method`/`url`；CLEAR `{ layer: 'hot'\|'archive'\|'all', origin?: string }`（`origin` 仅对 `hot` 按站点过滤） |
 | `VC_SW_INFO` | Viewer 代理 SW 状态；`siteServiceWorkerBlocked: true`（站点 SW 注册被禁用） |
 
 ### `VC_READY`
@@ -252,7 +252,7 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 - `disableCache: false`：允许热缓存复用（按 `method + url`，含 Cache-Control TTL；跨 reload 仍可命中未过期条目）
 - 未传 `devtoolsId` 时 bridge 使用随机 id，并在 `VC_READY` 后注册到 SW
 
-> Application 存储管理 API（build `20260728-v14`+）：见上文 `VC_COOKIE_*` / `VC_STORAGE_*` / `VC_IDB_*` / `VC_SITE_CACHE_*` / `VC_NETWORK_CACHE_*` / `VC_SW_INFO`。全局清除仍可用 `VC_CLEAR_STATE`。
+> Application 存储管理 API（build `20260728-v15`+）：见上文 `VC_COOKIE_*` / `VC_STORAGE_*` / `VC_IDB_*` / `VC_SITE_CACHE_*` / `VC_NETWORK_CACHE_*` / `VC_SW_INFO`。全局清除仍可用 `VC_CLEAR_STATE`。
 
 ### `VC_NETWORK_BODY_READ`
 

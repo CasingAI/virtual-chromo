@@ -7,6 +7,8 @@ const VC_ORIGIN = 'https://__vc__'
 
 const HDR_STORED_AT = 'x-vc-hot-stored-at'
 const HDR_EXPIRES_AT = 'x-vc-hot-expires-at'
+const HDR_METHOD = 'x-vc-hot-method'
+const HDR_URL = 'x-vc-hot-url'
 
 /**
  * Max bytes streamed from archive for DevTools Response/Preview.
@@ -379,7 +381,7 @@ const mClientOpts = new Map()
 /** @type {DevtoolsOpts|null} */
 let mGlobalOpts = null
 
-/** @type {Map<string, { size: number, at: number, expiresAt: number }>} */
+/** @type {Map<string, { size: number, at: number, expiresAt: number, method?: string, url?: string }>} */
 const mHotIndex = new Map()
 
 /**
@@ -680,6 +682,8 @@ function stripHotMeta(res) {
   const headers = new Headers(res.headers)
   headers.delete(HDR_STORED_AT)
   headers.delete(HDR_EXPIRES_AT)
+  headers.delete(HDR_METHOD)
+  headers.delete(HDR_URL)
   return new Response(res.body, {
     status: res.status,
     statusText: res.statusText,
@@ -689,14 +693,33 @@ function stripHotMeta(res) {
 
 /**
  * @param {Response} res
- * @returns {{ storedAt: number, expiresAt: number }}
+ * @returns {{ storedAt: number, expiresAt: number, method: string, url: string }}
  */
 function readHotMeta(res) {
   const storedAt = parseInt(res.headers.get(HDR_STORED_AT) || '', 10)
   const expiresAt = parseInt(res.headers.get(HDR_EXPIRES_AT) || '', 10)
+  const method = (res.headers.get(HDR_METHOD) || '').trim()
+  const url = (res.headers.get(HDR_URL) || '').trim()
   return {
     storedAt: Number.isFinite(storedAt) ? storedAt : 0,
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+    method,
+    url,
+  }
+}
+
+/**
+ * @param {string} origin
+ * @param {string} entryUrl
+ */
+function hotUrlMatchesOrigin(origin, entryUrl) {
+  if (!origin || !entryUrl) {
+    return false
+  }
+  try {
+    return new URL(entryUrl).origin === origin
+  } catch {
+    return false
   }
 }
 
@@ -728,6 +751,8 @@ export async function putHot(method, url, res, opts) {
     const headers = new Headers(res.headers)
     headers.set(HDR_STORED_AT, String(storedAt))
     headers.set(HDR_EXPIRES_AT, String(expiresAt))
+    headers.set(HDR_METHOD, String(method || 'GET').toUpperCase())
+    headers.set(HDR_URL, String(url || ''))
     const toStore = new Response(res.clone().body, {
       status: res.status,
       statusText: res.statusText,
@@ -735,7 +760,7 @@ export async function putHot(method, url, res, opts) {
     })
     const cache = await caches.open(HOT_CACHE)
     await cache.put(new Request(hotUrl), toStore)
-    mHotIndex.set(hotUrl, { size, at: storedAt, expiresAt })
+    mHotIndex.set(hotUrl, { size, at: storedAt, expiresAt, method: String(method || 'GET').toUpperCase(), url: String(url || '') })
     return true
   } catch (err) {
     console.warn('[vc] hot put fail:', err)
@@ -783,6 +808,8 @@ export async function getHot(method, url, migrate) {
             const headers = new Headers(res.headers)
             headers.set(HDR_STORED_AT, String(storedAt))
             headers.set(HDR_EXPIRES_AT, String(expiresAt))
+            headers.set(HDR_METHOD, String(method || 'GET').toUpperCase())
+            headers.set(HDR_URL, String(url || ''))
             await cache.put(
               new Request(hotUrl),
               new Response(res.clone().body, {
@@ -791,7 +818,13 @@ export async function getHot(method, url, migrate) {
                 headers,
               }),
             )
-            mHotIndex.set(hotUrl, { size, at: storedAt, expiresAt })
+            mHotIndex.set(hotUrl, {
+              size,
+              at: storedAt,
+              expiresAt,
+              method: String(method || 'GET').toUpperCase(),
+              url: String(url || ''),
+            })
             await cache.delete(new Request(legacyUrl))
             mHotIndex.delete(legacyUrl)
             res = await cache.match(new Request(hotUrl))
@@ -894,6 +927,8 @@ export async function rebuildHotIndex() {
         size,
         at: meta.storedAt || Date.now(),
         expiresAt: expiresAt || Date.now() + HEURISTIC_FALLBACK,
+        method: meta.method || '',
+        url: meta.url || '',
       })
     }
   } catch (err) {
@@ -922,13 +957,40 @@ export async function clearAllNetworkCaches() {
 
 /**
  * @param {'hot'|'archive'|'all'} layer
+ * @param {{ origin?: string }=} opts
  */
-export async function clearNetworkCacheLayer(layer) {
+export async function clearNetworkCacheLayer(layer, opts) {
+  const origin =
+    opts && typeof opts.origin === 'string' ? opts.origin.trim() : ''
+
   if (layer === 'all') {
     await clearAllNetworkCaches()
     return
   }
   if (layer === 'hot') {
+    if (origin) {
+      await rebuildHotIndex()
+      try {
+        const cache = await caches.open(HOT_CACHE)
+        const keys = await cache.keys()
+        for (const req of keys) {
+          const indexed = mHotIndex.get(req.url)
+          let entryUrl = indexed && indexed.url ? indexed.url : ''
+          if (!entryUrl) {
+            const res = await cache.match(req)
+            if (res) {
+              entryUrl = readHotMeta(res).url || ''
+            }
+          }
+          if (hotUrlMatchesOrigin(origin, entryUrl)) {
+            await evictHotUrl(req.url)
+          }
+        }
+      } catch (err) {
+        console.warn('[vc] clear hot by origin fail:', err)
+      }
+      return
+    }
     mHotIndex.clear()
     try {
       await caches.delete(HOT_CACHE)
@@ -989,7 +1051,7 @@ export async function listNetworkCache(layer, limit = 200) {
   const max = Math.max(1, Math.min(1000, limit | 0 || 200))
   if (layer === 'hot') {
     await rebuildHotIndex()
-    /** @type {{ key: string, size: number, storedAt: number, expiresAt: number, fresh: boolean }[]} */
+    /** @type {{ key: string, size: number, storedAt: number, expiresAt: number, fresh: boolean, method?: string, url?: string }[]} */
     const rows = []
     try {
       const cache = await caches.open(HOT_CACHE)
@@ -1000,12 +1062,24 @@ export async function listNetworkCache(layer, limit = 200) {
         }
         const meta = mHotIndex.get(req.url)
         const expiresAt = meta?.expiresAt || 0
+        let method = meta?.method || ''
+        let url = meta?.url || ''
+        if (!method || !url) {
+          const res = await cache.match(req)
+          if (res) {
+            const hdr = readHotMeta(res)
+            method = method || hdr.method || ''
+            url = url || hdr.url || ''
+          }
+        }
         rows.push({
           key: req.url,
           size: meta?.size || 0,
           storedAt: meta?.at || 0,
           expiresAt,
           fresh: expiresAt ? httpCache.isFresh(expiresAt) : false,
+          method: method || undefined,
+          url: url || undefined,
         })
       }
     } catch (err) {

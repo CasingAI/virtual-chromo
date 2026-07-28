@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v14'
+  var VC_BUILD = '20260728-v15'
 
   if (window.__vcInjected) {
     return
