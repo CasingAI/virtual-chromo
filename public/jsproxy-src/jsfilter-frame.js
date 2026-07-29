@@ -1,11 +1,15 @@
 /**
  * AST rewrite: global top / parent / self → __vcWin so common
  * iframe-bust checks (top !== self) become false.
- * Parse with meriyah; generate with astring. Failures return null.
+ *
+ * Parse with meriyah (ranges), then splice only those spans in the
+ * original source. Do NOT regenerate the whole file — obfuscators
+ * (e.g. Bilibili fingerprint) use function.toString() integrity
+ * checks that intentionally infinite-loop if the script is pretty-
+ * printed / reformatted.
  */
 
 import {parseScript} from 'meriyah'
-import {generate} from 'astring'
 
 /** Quick skip when source has no candidate identifiers. */
 export const FRAME_SPOOF_QUICK_RE =
@@ -180,17 +184,24 @@ function isFrameMember(node) {
 }
 
 /**
- * @returns {{ type: 'Identifier', name: string }}
+ * @param {{ start: number, end: number }[]} replacements
+ * @param {object} node
  */
-function vcWinId() {
-  return { type: 'Identifier', name: VC_WIN }
+function enqueueReplace(replacements, node) {
+  if (
+    typeof node.start === 'number' &&
+    typeof node.end === 'number' &&
+    node.end > node.start
+  ) {
+    replacements.push({ start: node.start, end: node.end })
+  }
 }
 
 /**
  * @param {object|null|undefined} node
  * @param {{ names: Set<string> }[]} stack
  * @param {{ parent: object|null, key: string|null, isBinding: boolean }} ctx
- * @param {{ changed: boolean }} state
+ * @param {{ replacements: { start: number, end: number }[] }} state
  * @returns {object|null|undefined}
  */
 function walk(node, stack, ctx, state) {
@@ -200,8 +211,8 @@ function walk(node, stack, ctx, state) {
 
   // Replace window.top / window['top'] etc. before descending
   if (isFrameMember(node) && !ctx.isBinding) {
-    state.changed = true
-    return vcWinId()
+    enqueueReplace(state.replacements, node)
+    return node
   }
 
   if (node.type === 'Identifier' && FRAME_NAMES.has(node.name)) {
@@ -265,8 +276,7 @@ function walk(node, stack, ctx, state) {
       ) {
         return node
       }
-      state.changed = true
-      return vcWinId()
+      enqueueReplace(state.replacements, node)
     }
     return node
   }
@@ -524,7 +534,7 @@ function walk(node, stack, ctx, state) {
  * Walk binding pattern defaults without treating pattern ids as free refs.
  * @param {object} p
  * @param {{ names: Set<string> }[]} stack
- * @param {{ changed: boolean }} state
+ * @param {{ replacements: { start: number, end: number }[] }} state
  */
 function walkParam(p, stack, state) {
   if (!p || typeof p !== 'object') {
@@ -575,6 +585,35 @@ function walkParam(p, stack, state) {
 }
 
 /**
+ * Apply non-overlapping replacements from the end so earlier offsets stay valid.
+ * @param {string} code
+ * @param {{ start: number, end: number }[]} replacements
+ * @returns {string}
+ */
+function applyReplacements(code, replacements) {
+  const sorted = replacements.slice().sort((a, b) => {
+    if (b.start !== a.start) {
+      return b.start - a.start
+    }
+    return b.end - a.end
+  })
+  let out = code
+  let lastStart = Infinity
+  for (const r of sorted) {
+    if (r.end > lastStart) {
+      // Overlap with a later (already applied) span — skip
+      continue
+    }
+    if (r.start < 0 || r.end > code.length || r.start >= r.end) {
+      continue
+    }
+    out = out.slice(0, r.start) + VC_WIN + out.slice(r.end)
+    lastStart = r.start
+  }
+  return out
+}
+
+/**
  * @param {string} code
  * @returns {string|null} rewritten code, or null if unchanged / failed
  */
@@ -591,23 +630,20 @@ export function transformFrameSpoof(code) {
       next: true,
       webcompat: true,
       loc: false,
-      ranges: false,
+      ranges: true,
     })
   } catch {
     return null
   }
-  const state = { changed: false }
+  const state = { replacements: [] }
   try {
     walk(ast, [], { parent: null, key: null, isBinding: false }, state)
   } catch {
     return null
   }
-  if (!state.changed) {
+  if (!state.replacements.length) {
     return null
   }
-  try {
-    return generate(ast)
-  } catch {
-    return null
-  }
+  const out = applyReplacements(code, state.replacements)
+  return out === code ? null : out
 }

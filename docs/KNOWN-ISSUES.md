@@ -110,6 +110,8 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 [`jsfilter.js`](../public/jsproxy-src/jsfilter.js) + [`jsfilter-frame.js`](../public/jsproxy-src/jsfilter-frame.js) 在代理 **script** 时用 meriyah AST 把全局 `top` / `parent` / `self`（及 `window.top` 等）改写为 `__vcWin`（[`client.js`](../public/jsproxy-src/client.js) 里等于当前 window），使常见 `top !== self` 破框检测为假。
 
+**build `20260728-v25`+**：只按 AST `ranges` 切片替换原文字符串，**不再**整文件 regenerate。v23–v24 用 astring 重生成会改变 `function.toString()`，触发部分混淆脚本（如 bilibili `bili-user-fingerprint`）的完整性校验死循环（`FMAGcY` push 自增）。
+
 | 项 | 说明 |
 |----|------|
 | 开关 | [`conf.js`](../public/conf.js) `jsfilter_frame_spoof`（默认 `true`；`false` 关闭） |

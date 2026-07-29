@@ -36,7 +36,7 @@
 ## jsfilter（virtual-chromo）
 
 - 正则：`location` → `__location`；`postMessage(` 注入 srcWin；`import(` → `__vcImport(`
-- AST（build `20260728-v23`+）：[`jsfilter-frame.js`](jsfilter-frame.js) 将全局 `top`/`parent`/`self` 等改为 `__vcWin`；开关 `jsfilter_frame_spoof`（见根目录 `public/conf.js`）
+- AST（build `20260728-v23`+，`v25`+ 改为 ranges 切片）：[`jsfilter-frame.js`](jsfilter-frame.js) 将全局 `top`/`parent`/`self` 等改为 `__vcWin`；开关 `jsfilter_frame_spoof`（见根目录 `public/conf.js`）
 - 运行时：`client.init` 设置 `global.__vcWin = global`
 
 ## 单文件可读版

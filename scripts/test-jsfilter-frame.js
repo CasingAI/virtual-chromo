@@ -52,6 +52,15 @@ const cases = [
     input: 'if (globalThis.parent !== globalThis) bust()',
     expectIncludes: ['__vcWin'],
   },
+  {
+    name: 'preserve surrounding source (no pretty-print)',
+    input:
+      "this['MMmgvz']=function(){return'newState';};(self,function(){return 1})",
+    expectIncludes: [
+      "this['MMmgvz']=function(){return'newState';};(__vcWin,function(){return 1})",
+    ],
+    expectExcludes: ['function ()'],
+  },
 ]
 
 let failed = 0
