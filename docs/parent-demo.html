@@ -489,6 +489,69 @@
         post('VC_NAVIGATE', { url: url })
       }
 
+      const NAV_DEDUP_MS = 2000
+      /** @type {Map<string, number>} */
+      const navDedup = new Map()
+
+      function canonicalNavUrl(url) {
+        const raw = String(url || '').trim()
+        if (!raw) return ''
+        try {
+          const u = new URL(raw)
+          let path = u.pathname
+          if (path.length > 1 && path.endsWith('/')) {
+            path = path.slice(0, -1)
+          }
+          return u.origin + path + u.search + u.hash
+        } catch {
+          return raw
+        }
+      }
+
+      function isSameTabOpenTarget(target) {
+        const t = String(target || '').toLowerCase()
+        return t === '_top' || t === '_self' || t === '_parent'
+      }
+
+      function resolveNavIntent(kind, payload) {
+        const method = String((payload && payload.method) || '').toLowerCase()
+        const target = payload && payload.target
+        const url = String((payload && (payload.url || payload.href)) || '').trim()
+        const key = [kind, method, target || '', canonicalNavUrl(url)].join('|')
+        const now = Date.now()
+        const prev = navDedup.get(key)
+        if (prev !== undefined && now - prev < NAV_DEDUP_MS) {
+          return { action: 'ignore', reason: 'duplicate' }
+        }
+        navDedup.set(key, now)
+
+        if (kind === 'LOCATION' && method === 'open') {
+          if (isSameTabOpenTarget(target)) {
+            if (currentUrl && canonicalNavUrl(url) === canonicalNavUrl(currentUrl)) {
+              return { action: 'ignore', reason: 'frame-bust same url' }
+            }
+            return { action: 'sameTab', url: url, reason: 'open same-tab target' }
+          }
+          if (String(target || '').toLowerCase() === '_blank' || !target) {
+            return { action: 'ignore', reason: 'demo: no multi-tab UI' }
+          }
+          return { action: 'sameTab', url: url, reason: 'open named window' }
+        }
+
+        if (kind === 'CLICK') {
+          return { action: 'ignore', reason: 'wait for VC_HISTORY' }
+        }
+
+        if (method === 'reload') {
+          return { action: 'reload', reason: 'reload' }
+        }
+
+        if (!url) {
+          return { action: 'ignore', reason: 'no url' }
+        }
+        return { action: 'sameTab', url: url, reason: 'location' }
+      }
+
       window.addEventListener('message', function (event) {
         if (event.source !== iframe.contentWindow) return
         if (!Array.isArray(event.data)) return
@@ -567,19 +630,25 @@
                 (payload && payload.title || currentUrl),
             )
             break
-          case 'VC_LOCATION':
+          case 'VC_LOCATION': {
+            const intent = resolveNavIntent('LOCATION', payload)
             setStatus(
               'location.' +
                 (payload && payload.method || '?') +
+                (payload && payload.target ? ' target=' + payload.target : '') +
                 ': ' +
-                (payload && payload.url || ''),
+                (payload && payload.url || '') +
+                ' → ' +
+                intent.action +
+                (intent.reason ? ' (' + intent.reason + ')' : ''),
             )
-            if (payload && payload.url && payload.method !== 'reload') {
-              navigate(payload.url)
-            } else if (payload && payload.method === 'reload') {
+            if (intent.action === 'sameTab' && intent.url) {
+              navigate(intent.url)
+            } else if (intent.action === 'reload') {
               post('VC_RELOAD')
             }
             break
+          }
           case 'VC_DEBUG_NAV':
             setStatus(
               '探针 ' +

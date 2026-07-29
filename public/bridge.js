@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v20'
+  const BUILD = '20260728-v22'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -2833,6 +2833,65 @@
   }
 
   /**
+   * Normalize a navigation URL for same-page comparisons (trailing slash, etc.).
+   * @param {string} url
+   * @returns {string}
+   */
+  function canonicalNavUrl(url) {
+    const raw = String(url || '').trim()
+    if (!raw) {
+      return ''
+    }
+    try {
+      const u = new URL(raw)
+      let path = u.pathname
+      if (path.length > 1 && path.endsWith('/')) {
+        path = path.slice(0, -1)
+      }
+      return u.origin + path + u.search + u.hash
+    } catch {
+      return raw
+    }
+  }
+
+  /**
+   * @param {string} a
+   * @param {string} b
+   * @returns {boolean}
+   */
+  function urlsNavEquivalent(a, b) {
+    const ca = canonicalNavUrl(a)
+    const cb = canonicalNavUrl(b)
+    return Boolean(ca && cb && ca === cb)
+  }
+
+  /**
+   * window.open targets that mean same browsing context, not a new tab.
+   * @param {string|undefined} target
+   * @returns {boolean}
+   */
+  function isSameTabOpenTarget(target) {
+    const t = String(target || '').toLowerCase()
+    return t === '_top' || t === '_self' || t === '_parent'
+  }
+
+  /** @type {{ key: string, at: number }} */
+  let lastPostedLocation = { key: '', at: 0 }
+  const LOCATION_DEDUP_MS = 2000
+
+  /**
+   * @param {Record<string, unknown>} out
+   * @returns {string}
+   */
+  function locationPostKey(out) {
+    return [
+      String(out.method || ''),
+      String(out.target || ''),
+      canonicalNavUrl(String(out.url || '')),
+    ].join('|')
+  }
+
+  /**
    * @param {unknown} payload
    */
   function ingestInjectLocation(payload) {
@@ -2873,6 +2932,32 @@
       })
       return
     }
+
+    const method = String(out.method || '')
+    const target = typeof out.target === 'string' ? out.target : ''
+    const url = typeof out.url === 'string' ? out.url : ''
+
+    // Frame-bust: open(_, '_top'|'_self'|'_parent') is never "open a new tab".
+    if (method === 'open' && isSameTabOpenTarget(target)) {
+      if (!url || urlsNavEquivalent(url, currentContentUrl)) {
+        vlog('info', ['frame-bust open consumed:', url || '(empty)', 'target=' + target])
+        return
+      }
+      vlog('info', ['same-tab open → navigate:', url])
+      navigate({ url: url })
+      return
+    }
+
+    const postKey = locationPostKey(out)
+    const now = Date.now()
+    if (
+      lastPostedLocation.key === postKey &&
+      now - lastPostedLocation.at < LOCATION_DEDUP_MS
+    ) {
+      vlog('info', ['duplicate VC_LOCATION suppressed:', postKey])
+      return
+    }
+    lastPostedLocation = { key: postKey, at: now }
     postToParent('VC_LOCATION', out)
   }
 

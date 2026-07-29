@@ -3,35 +3,49 @@
  * Filters virtual-chromo / jsproxy / inject frames so site scripts surface first.
  */
 
+/** Keep in sync with captureNavStack() in public/inject.js */
+export const STACK_SKIP_RE =
+  /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|bundle\.js|vc-report|vc-stack|vc-passive-nav|vc-fakeloc|__vcImport|client\.js|__sys__|helper\.js|bridge\.js|network-initiator|chrome-extension:)/i
+
+export const STACK_MAX_FRAMES = 20
+
 /**
+ * @param {string} raw
+ * @param {number} [maxFrames]
  * @returns {string[]}
  */
-export function captureStack() {
-  let raw = ''
-  try {
-    raw = new Error().stack || ''
-  } catch {
+export function filterStackFrames(raw, maxFrames = STACK_MAX_FRAMES) {
+  if (!raw || typeof raw !== 'string') {
     return []
   }
   const lines = raw.split('\n')
   /** @type {string[]} */
   const out = []
-  const skipRe =
-    /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|vc-report|vc-stack|vc-passive-nav|vc-fakeloc|__vcImport|client\.js|chrome-extension:)/i
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i].trim()
     if (!line || line.indexOf('Error') === 0) {
       continue
     }
-    if (skipRe.test(line)) {
+    if (STACK_SKIP_RE.test(line)) {
       continue
     }
     out.push(line)
-    if (out.length >= 20) {
+    if (out.length >= maxFrames) {
       break
     }
   }
   return out
+}
+
+/**
+ * @returns {string[]}
+ */
+export function captureStack() {
+  try {
+    return filterStackFrames(new Error().stack || '')
+  } catch {
+    return []
+  }
 }
 
 /**

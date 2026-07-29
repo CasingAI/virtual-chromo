@@ -98,7 +98,9 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 1. 先发 `VC_DEBUG_PANEL { enabled: true }`（或 Chromo 扩展页勾选「Chromo 调试面板」）→ viewer 左下角「调」→ **导航** → 勾选 **导航探针**（或父发 `VC_DEBUG_OPTIONS { navProbe: true }`）
 2. 再导航到问题站点：父侧不再收到 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`，连环开 Tab 应停止
 3. 「导航」列表查看被拦截的意图与 `stack`，定位站点脚本触发点
-4. 父侧改为：同 URL / `method:'open'` 去重；仅用户明确「新标签打开」时才 `createTab`
+4. 父侧改为：同 URL / `method:'open'` 去重；`target` 为 `_top`/`_self`/`_parent` 时**同 Tab**导航，勿 `createTab`（参考 [`docs/instant-app/chromo-nav.ts`](../instant-app/chromo-nav.ts)）
+
+**build `20260728-v22`+**：viewer [`bridge.js`](../public/bridge.js) 会在子页侧吞掉 `open(_, '_top'|'_self'|'_parent')` 且与当前 URL 相同的破框上报，并对同 Tab `open` 在 viewer 内直接 `VC_NAVIGATE`，父应用不再收到此类 `VC_LOCATION`。
 
 探针模式下另发只读 `VC_DEBUG_NAV`（含 stack）；**不得**据此开 Tab。
 

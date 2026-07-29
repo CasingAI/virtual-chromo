@@ -7,7 +7,7 @@
   'use strict'
 
   var VC_VERSION = '1.3.0'
-  var VC_BUILD = '20260728-v20'
+  var VC_BUILD = '20260728-v22'
 
   if (window.__vcInjected) {
     return
@@ -140,8 +140,9 @@
     }
     var lines = raw.split('\n')
     var out = []
+    // Keep in sync with STACK_SKIP_RE in public/jsproxy-src/vc-stack.js
     var skipRe =
-      /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|vc-report|vc-stack|vc-passive-nav|__vcImport|client\.js|chrome-extension:)/i
+      /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|bundle\.js|vc-report|vc-stack|vc-passive-nav|vc-fakeloc|__vcImport|client\.js|__sys__|helper\.js|bridge\.js|network-initiator|chrome-extension:)/i
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim()
       if (!line || line.indexOf('Error') === 0) {

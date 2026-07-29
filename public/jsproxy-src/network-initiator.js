@@ -1,8 +1,9 @@
 /** Initiator tip cache + chain helpers for Network DevTools. */
 
+import {filterStackFrames, STACK_MAX_FRAMES} from './vc-stack.js'
+
 const TIP_TTL_MS = 30 * 1000
 const TIP_MAX = 200
-const STACK_MAX_FRAMES = 20
 const CHAIN_MAX_HOPS = 8
 
 /** @type {Map<string, object>} tipId → tip */
@@ -139,28 +140,7 @@ export function rememberReferrer(url, referrer) {
  * @returns {string[]}
  */
 export function sanitizeStack(raw) {
-  if (!raw || typeof raw !== 'string') {
-    return []
-  }
-  const lines = raw.split('\n')
-  /** @type {string[]} */
-  const out = []
-  const skipRe =
-    /(?:virtual-chromo|jsproxy|inject\.js|bundle\.built|__vcImport|network-initiator|chrome-extension:)/i
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i].trim()
-    if (!line || line.indexOf('Error') === 0) {
-      continue
-    }
-    if (skipRe.test(line)) {
-      continue
-    }
-    out.push(line)
-    if (out.length >= STACK_MAX_FRAMES) {
-      break
-    }
-  }
-  return out
+  return filterStackFrames(raw, STACK_MAX_FRAMES)
 }
 
 /**
