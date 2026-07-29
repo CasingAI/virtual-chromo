@@ -1886,6 +1886,13 @@ export function genWsUrl(urlObj, args) {
 
 
 /**
+ * @returns {object|undefined}
+ */
+export function getConf() {
+  return mConf
+}
+
+/**
  * @param {object} conf 
  */
 export function setConf(conf) {
@@ -1915,31 +1922,61 @@ export function setConf(conf) {
 // jsfilter.js  (webpack module 10)
 // ========================================================================
 import * as util from './util.js'
+import * as route from './route.js'
+import {transformFrameSpoof} from './jsfilter-frame.js'
 
 
 /**
- * @param {string} code 
+ * @returns {boolean}
  */
-export function parseStr(code) {
-  // TODO: parse js ast
+function isFrameSpoofEnabled() {
+  try {
+    const conf = route.getConf && route.getConf()
+    if (conf && conf.jsfilter_frame_spoof === false) {
+      return false
+    }
+  } catch {
+    // conf not ready — default on
+  }
+  return true
+}
+
+/**
+ * @param {string} code
+ * @param {{ frameSpoof?: boolean }} [opts]
+ */
+export function parseStr(code, opts = {}) {
+  let out = code
   let match = false
 
-  code = code.replace(/(\b)location(\b)/g, (_, $1, $2) => {
+  if (opts.frameSpoof !== false && isFrameSpoofEnabled()) {
+    try {
+      const astOut = transformFrameSpoof(out)
+      if (astOut) {
+        out = astOut
+        match = true
+      }
+    } catch {
+      // parse/transform failure → keep original for regex path
+    }
+  }
+
+  out = out.replace(/(\b)location(\b)/g, (_, $1, $2) => {
     match = true
     return $1 + '__location' + $2
   })
-  code = code.replace(/postMessage\s*\(/g, s => {
+  out = out.replace(/postMessage\s*\(/g, s => {
     match = true
     return s + `...(self.__set_srcWin?__set_srcWin():[]), `
   })
   // Dynamic import() → __vcImport( for Initiator stack capture.
   // Avoid import.meta / static import by requiring word-boundary and no leading dot.
-  code = code.replace(/(^|[^\.\w$])import\s*\(/g, (_, prefix) => {
+  out = out.replace(/(^|[^\.\w$])import\s*\(/g, (_, prefix) => {
     match = true
     return prefix + '__vcImport('
   })
   if (match) {
-    return code
+    return out
   }
   return null
 }
@@ -1947,10 +1984,11 @@ export function parseStr(code) {
 /**
  * @param {Uint8Array} buf
  * @param {string} charset
+ * @param {{ frameSpoof?: boolean }} [opts]
  */
-export function parseBin(buf, charset) {
+export function parseBin(buf, charset, opts = {}) {
   const str = util.bytesToStr(buf, charset)
-  const ret = parseStr(str)
+  const ret = parseStr(str, opts)
   if (ret !== null) {
     return util.strToBytes(ret)
   }
@@ -2711,6 +2749,13 @@ export function init(global, origin) {
     }
   } catch {
     // ignore non-extensible globals
+  }
+
+  // Fake top/self/parent for AST-rewritten scripts (jsfilter-frame → __vcWin)
+  try {
+    global.__vcWin = global
+  } catch {
+    // non-extensible global
   }
 
   // hook Location API
@@ -3659,7 +3704,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     }
     parsedSet.add(elem)
 
-    return jsfilter.parseStr(code)
+    return jsfilter.parseStr(code, { frameSpoof: true })
   }
 
   
@@ -3684,7 +3729,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
       if (el[eventName]) {
         const code = el.getAttribute(eventName)
         if (code) {
-          const ret = jsfilter.parseStr(code)
+          const ret = jsfilter.parseStr(code, { frameSpoof: true })
           if (ret) {
             el[eventName] = ret
             console.log('[jsproxy] jsfilter onevent:', eventName)
@@ -4614,12 +4659,15 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
 
 
 /**
- * @param {ArrayBuffer} buf 
- * @param {string} charset 
+ * @param {ArrayBuffer} buf
+ * @param {string} charset
+ * @param {string} [destination] req.destination — frame spoof only for 'script'
  */
-function processJs(buf, charset) {
+function processJs(buf, charset, destination) {
   const u8 = new Uint8Array(buf)
-  const ret = jsfilter.parseBin(u8, charset) || u8
+  const opts =
+    destination === 'script' ? { frameSpoof: true } : { frameSpoof: false }
+  const ret = jsfilter.parseBin(u8, charset, opts) || u8
   return util.concatBufs([inject.getWorkerCode(), ret])
 }
 
@@ -4987,7 +5035,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, clientId, hotKeyUrl) {
         type === 'sharedworker'
     ) {
       const buf = await res.arrayBuffer()
-      const ret = processJs(buf, charset)
+      const ret = processJs(buf, charset, type)
 
       setHeader('content-type', 'text/javascript')
       const chunks = [new Uint8Array(ret)]
@@ -5458,7 +5506,10 @@ async function passthroughTurnstileScript(req, urlStr, targetUrlStr, clientId) {
   const ct = res.headers.get('content-type') || ''
   const charsetMatch = ct.match(/charset=['"]?([^'";]+)/i)
   const charset = charsetMatch ? charsetMatch[1] : undefined
-  const patched = jsfilter.parseBin(new Uint8Array(buf), charset) || new Uint8Array(buf)
+  // CAPTCHA vendor scripts: location patch only — no frame spoof
+  const patched =
+    jsfilter.parseBin(new Uint8Array(buf), charset, { frameSpoof: false }) ||
+    new Uint8Array(buf)
   const headers = new Headers(res.headers)
   headers.set('content-type', 'text/javascript; charset=utf-8')
   return new Response(patched, {

@@ -171,12 +171,15 @@ function processHtml(res, resOpt, urlObj, onReady, onComplete) {
 
 
 /**
- * @param {ArrayBuffer} buf 
- * @param {string} charset 
+ * @param {ArrayBuffer} buf
+ * @param {string} charset
+ * @param {string} [destination] req.destination — frame spoof only for 'script'
  */
-function processJs(buf, charset) {
+function processJs(buf, charset, destination) {
   const u8 = new Uint8Array(buf)
-  const ret = jsfilter.parseBin(u8, charset) || u8
+  const opts =
+    destination === 'script' ? { frameSpoof: true } : { frameSpoof: false }
+  const ret = jsfilter.parseBin(u8, charset, opts) || u8
   return util.concatBufs([inject.getWorkerCode(), ret])
 }
 
@@ -544,7 +547,7 @@ async function forward(req, urlObj, cliUrlObj, redirNum, clientId, hotKeyUrl) {
         type === 'sharedworker'
     ) {
       const buf = await res.arrayBuffer()
-      const ret = processJs(buf, charset)
+      const ret = processJs(buf, charset, type)
 
       setHeader('content-type', 'text/javascript')
       const chunks = [new Uint8Array(ret)]
@@ -1015,7 +1018,10 @@ async function passthroughTurnstileScript(req, urlStr, targetUrlStr, clientId) {
   const ct = res.headers.get('content-type') || ''
   const charsetMatch = ct.match(/charset=['"]?([^'";]+)/i)
   const charset = charsetMatch ? charsetMatch[1] : undefined
-  const patched = jsfilter.parseBin(new Uint8Array(buf), charset) || new Uint8Array(buf)
+  // CAPTCHA vendor scripts: location patch only — no frame spoof
+  const patched =
+    jsfilter.parseBin(new Uint8Array(buf), charset, { frameSpoof: false }) ||
+    new Uint8Array(buf)
   const headers = new Headers(res.headers)
   headers.set('content-type', 'text/javascript; charset=utf-8')
   return new Response(patched, {

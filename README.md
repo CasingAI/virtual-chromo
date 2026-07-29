@@ -16,6 +16,7 @@
 - [x] `public/inject.js`（console hook、dialog noop）
 - [x] **被动 WebView**（build `20260727-v15`+）：子页不自主换页；`VC_CLICK` / `VC_LOCATION` 上报意图，父级 `VC_NAVIGATE` 为唯一整页换址入口
 - [x] **导航探针**（build `20260728-v19`+）：`VC_DEBUG_OPTIONS { navProbe }` 抑制导航上报并展示触发栈（viewer「导航」tab / `VC_DEBUG_NAV`）
+- [x] **jsfilter AST 破框减噪**（build `20260728-v23`+）：代理 script 将全局 `top`/`parent`/`self` 改写为 `__vcWin`（`jsfilter_frame_spoof`）
 - [x] **Debug Panel 开关**（build `20260728-v20`+）：嵌入时默认隐藏；`VC_DEBUG_PANEL { enabled }` 控制绿色「调」浮钮
 - [x] **SPA 页内路由**（build `20260727-v16`+）：`pushState` / `replaceState` / `popstate` 上报 `VC_HISTORY`
 - [x] ~~Session / BrowserContext~~（已在 build `20260728-v12` 移除）：单用户全局 cookie / storage；清状态用 `VC_CLEAR_STATE`

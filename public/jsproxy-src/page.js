@@ -785,7 +785,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
     }
     parsedSet.add(elem)
 
-    return jsfilter.parseStr(code)
+    return jsfilter.parseStr(code, { frameSpoof: true })
   }
 
   
@@ -810,7 +810,7 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
       if (el[eventName]) {
         const code = el.getAttribute(eventName)
         if (code) {
-          const ret = jsfilter.parseStr(code)
+          const ret = jsfilter.parseStr(code, { frameSpoof: true })
           if (ret) {
             el[eventName] = ret
             console.log('[jsproxy] jsfilter onevent:', eventName)

@@ -1,12 +1,15 @@
 // Bump VC_BUILD when bridge / inject / conf change. Keep in sync with public/sw.js.
 // Assign on self (no var/let/const) so importScripts + periodic re-eval never redeclare.
 self.VC_VERSION = '1.3.0'
-self.VC_BUILD = '20260728-v22'
+self.VC_BUILD = '20260728-v23'
 
 jsproxy_config({
   ver: '1',
   vc_version: self.VC_VERSION,
   vc_build: self.VC_BUILD,
+
+  // AST rewrite top/parent/self → __vcWin in proxied scripts (stage 2). Set false to disable.
+  jsfilter_frame_spoof: true,
 
   node_map: {
     local: {

@@ -104,6 +104,19 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 探针模式下另发只读 `VC_DEBUG_NAV`（含 stack）；**不得**据此开 Tab。
 
+### jsfilter AST 减少 iframe 检测（build `20260728-v23`+）
+
+[`jsfilter.js`](../public/jsproxy-src/jsfilter.js) + [`jsfilter-frame.js`](../public/jsproxy-src/jsfilter-frame.js) 在代理 **script** 时用 meriyah AST 把全局 `top` / `parent` / `self`（及 `window.top` 等）改写为 `__vcWin`（[`client.js`](../public/jsproxy-src/client.js) 里等于当前 window），使常见 `top !== self` 破框检测为假。
+
+| 项 | 说明 |
+|----|------|
+| 开关 | [`conf.js`](../public/conf.js) `jsfilter_frame_spoof`（默认 `true`；`false` 关闭） |
+| 覆盖 | 经 SW `processJs` 的 script、page 内联 script / onevent |
+| **不**覆盖 | `worker` / `sharedworker`；Turnstile/reCAPTCHA passthrough；动态属性名 `obj['t'+'op']`；parse 失败脚本（回退仅正则） |
+| 验证 | `node scripts/test-jsfilter-frame.js` |
+
+仍不保证「永远发现不了 iframe」；与 v22 bridge 吞掉 `open(_top)` 叠加使用。
+
 ---
 
 ## SPA 页内路由（build `20260727-v16`+）

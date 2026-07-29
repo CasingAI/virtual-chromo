@@ -443,7 +443,7 @@ Service Worker 注册完成，bridge 可接收导航命令。
 |------|------|
 | `VC_CLICK` | 记录点击意图；**不要**默认对有 `href` 的链接立刻 `VC_NAVIGATE` |
 | `VC_HISTORY` | 更新地址栏 / 会话状态；表示 SPA 已在页内完成路由 |
-| `VC_LOCATION` | 子页想**整页**换地址；再决定是否 `VC_NAVIGATE`。`method:'open'` 且 `target` 为 `_top`/`_self`/`_parent` 表示同上下文导航，**不是**新标签；同 URL 常为 iframe 破框，应忽略或同 Tab 刷新（build `20260728-v22`+ viewer 会在 bridge 侧吞掉同 URL 破框） |
+| `VC_LOCATION` | 子页想**整页**换地址；再决定是否 `VC_NAVIGATE`。`method:'open'` 且 `target` 为 `_top`/`_self`/`_parent` 表示同上下文导航，**不是**新标签；同 URL 常为 iframe 破框，应忽略或同 Tab 刷新（build `20260728-v22`+ viewer 会在 bridge 侧吞掉同 URL 破框）。build `20260728-v23`+ 另通过 jsfilter AST（`jsfilter_frame_spoof`）改写常见 `top`/`self` 检测以减少破框触发 |
 
 典型 SPA 点击 `<Link href="/about">`：`VC_CLICK` → 子页 `pushState` → `VC_HISTORY`（父级只同步 URL，不 reload）。
 

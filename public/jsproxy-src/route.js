@@ -88,6 +88,13 @@ export function genWsUrl(urlObj, args) {
 
 
 /**
+ * @returns {object|undefined}
+ */
+export function getConf() {
+  return mConf
+}
+
+/**
  * @param {object} conf 
  */
 export function setConf(conf) {

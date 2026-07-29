@@ -131,6 +131,13 @@ export function init(global, origin) {
     // ignore non-extensible globals
   }
 
+  // Fake top/self/parent for AST-rewritten scripts (jsfilter-frame → __vcWin)
+  try {
+    global.__vcWin = global
+  } catch {
+    // non-extensible global
+  }
+
   // hook Location API
   const fakeLoc = createFakeLoc(global)
 

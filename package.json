@@ -6,9 +6,12 @@
     "deploy": "wrangler deploy",
     "format:bundle": "npx --yes js-beautify -o public/bundle.formatted.js public/bundle.js",
     "reconstruct:bundle": "node scripts/reconstruct-bundle.js",
-    "build:bundle": "webpack --config webpack.config.js"
+    "build:bundle": "webpack --config webpack.config.js",
+    "test:jsfilter-frame": "node scripts/test-jsfilter-frame.js"
   },
   "devDependencies": {
+    "astring": "^1.9.0",
+    "meriyah": "^7.2.0",
     "modern-screenshot": "^4.7.0",
     "webpack": "^5.109.0",
     "webpack-cli": "^7.2.1",
