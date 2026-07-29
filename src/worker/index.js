@@ -139,7 +139,7 @@ function withNoStore(res) {
  * @param {Request} req
  * @param {string} pathname
  */
-function httpHandler(req, pathname) {
+async function httpHandler(req, pathname) {
   const reqHdrRaw = req.headers
   if (reqHdrRaw.has('x-jsproxy')) {
     return Response.error()
@@ -218,8 +218,10 @@ function httpHandler(req, pathname) {
     redirect: 'manual',
   }
 
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    reqInit.body = req.body
+  // Buffer body: avoid duplex requirement when forwarding ReadableStream
+  // to upstream (undici / Cloudflare Workers).
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.bodyUsed) {
+    reqInit.body = await req.arrayBuffer()
   }
 
   return proxy(targetUrl, reqInit, acehOld, rawLen, 0)

@@ -398,14 +398,13 @@ export async function launch(req, urlObj, cliUrlObj) {
     cache: fetchCtx.getFetchContext().disableCache ? 'no-store' : 'default',
   }
 
-  if (method === 'POST' && !req.bodyUsed) {
-    if (req.body) {
-      reqOpt.body = req.body
-    } else {
-      const buf = await req.arrayBuffer()
-      if (buf.byteLength > 0) {
-        reqOpt.body = buf
-      }
+  // Buffer body for non-GET/HEAD: Chrome requires duplex for streaming
+  // bodies, and ArrayBuffer can be safely replayed across MAX_RETRY.
+  const methodUpper = String(method || 'GET').toUpperCase()
+  if (methodUpper !== 'GET' && methodUpper !== 'HEAD' && !req.bodyUsed) {
+    const buf = await req.arrayBuffer()
+    if (buf.byteLength > 0) {
+      reqOpt.body = buf
     }
   }
 

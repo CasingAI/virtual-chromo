@@ -579,6 +579,143 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
   const frameProto = win['HTMLFrameElement'].prototype
   hookFrameSrc('FRAME', frameProto)
 
+  //
+  // CSSOM: rewrite url() in background-image / background / cssText
+  // (GeeTest etc. set absolute https backgrounds that would otherwise
+  // hit SW as bare cross-origin and historically returned 500.)
+  //
+  /**
+   * @param {string} val
+   * @param {*} relObj CSSStyleDeclaration or Element (for env.get baseURI)
+   */
+  function rewriteCssUrls(val, relObj) {
+    if (!val || typeof val !== 'string' || val.indexOf('url(') === -1) {
+      return val
+    }
+    return val.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, quote, raw) => {
+      const trimmed = String(raw || '').trim()
+      if (
+        !trimmed ||
+        trimmed.indexOf('data:') === 0 ||
+        trimmed.indexOf('blob:') === 0
+      ) {
+        return match
+      }
+      try {
+        const ctx = env.get(relObj)
+        const base = ctx && ctx.doc ? ctx.doc.baseURI : undefined
+        if (urlx.isCaptchaPassthroughUrl(trimmed, base)) {
+          return match
+        }
+        const enc = urlx.encUrlStrRel(trimmed, relObj)
+        if (!enc || enc === trimmed) {
+          return match
+        }
+        return 'url(' + quote + enc + quote + ')'
+      } catch (err) {
+        return match
+      }
+    })
+  }
+
+  /** @type {WeakMap<object, object>} */
+  const styleProxyMap = new WeakMap()
+
+  /**
+   * Chrome exposes backgroundImage etc. as instance props that do not go
+   * through CSSStyleDeclaration.prototype setters; Proxy element.style.
+   * @param {CSSStyleDeclaration} style
+   */
+  function wrapStyleDecl(style) {
+    if (!style) {
+      return style
+    }
+    const cached = styleProxyMap.get(style)
+    if (cached) {
+      return cached
+    }
+    const proxy = new Proxy(style, {
+      set(target, prop, value) {
+        if (
+          typeof prop === 'string' &&
+          typeof value === 'string' &&
+          value.indexOf('url(') !== -1
+        ) {
+          const lower = prop.toLowerCase()
+          if (
+            lower === 'backgroundimage' ||
+            lower === 'background' ||
+            lower === 'csstext' ||
+            lower === 'liststyleimage' ||
+            lower === 'borderimage' ||
+            lower === 'borderimagesource' ||
+            lower === 'maskimage' ||
+            lower === 'webkitmaskimage'
+          ) {
+            value = rewriteCssUrls(value, target)
+          }
+        }
+        target[prop] = value
+        return true
+      },
+      get(target, prop) {
+        const v = target[prop]
+        if (typeof v === 'function') {
+          return v.bind(target)
+        }
+        return v
+      },
+    })
+    styleProxyMap.set(style, proxy)
+    return proxy
+  }
+
+  function hookStyleAccessor(proto) {
+    if (!proto) {
+      return
+    }
+    hook.prop(proto, 'style',
+      getter => function() {
+        return wrapStyleDecl(getter.call(this))
+      }
+    )
+  }
+  hookStyleAccessor(win['HTMLElement'] && win['HTMLElement'].prototype)
+  hookStyleAccessor(win['SVGElement'] && win['SVGElement'].prototype)
+  hookStyleAccessor(win['MathMLElement'] && win['MathMLElement'].prototype)
+
+  const cssStyleProto = win['CSSStyleDeclaration'] && win['CSSStyleDeclaration'].prototype
+  if (cssStyleProto) {
+    // cssText still has a real prototype setter in Chromium
+    hook.prop(cssStyleProto, 'cssText',
+      null,
+      setter => function(val) {
+        if (typeof val === 'string' && val.indexOf('url(') !== -1) {
+          val = rewriteCssUrls(val, this)
+        }
+        setter.call(this, val)
+      }
+    )
+    hook.func(cssStyleProto, 'setProperty', oldFn => function(name, value, priority) {
+      const propName = String(name || '').toLowerCase()
+      if (
+        (propName === 'background-image' ||
+          propName === 'background' ||
+          propName === 'list-style-image' ||
+          propName === 'border-image' ||
+          propName === 'border-image-source' ||
+          propName === 'mask-image') &&
+        typeof value === 'string' &&
+        value.indexOf('url(') !== -1
+      ) {
+        value = rewriteCssUrls(value, this)
+      }
+      if (priority === undefined) {
+        return apply(oldFn, this, [name, value])
+      }
+      return apply(oldFn, this, [name, value, priority])
+    })
+  }
 
   // 更新默认的 baseURI
   // https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base#Usage_notes

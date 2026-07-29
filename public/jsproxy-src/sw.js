@@ -827,7 +827,7 @@ function applyTurnstileCorsHeaders(setHeader) {
  * @param {string} urlStr
  * @param {string} targetUrlStr
  */
-function passthroughFetchRaw(req, urlStr, targetUrlStr) {
+async function passthroughFetchRaw(req, urlStr, targetUrlStr) {
   const cacheMode = fetchCtx.getFetchContext().disableCache
     ? 'no-store'
     : req.cache
@@ -856,8 +856,11 @@ function passthroughFetchRaw(req, urlStr, targetUrlStr) {
   if (req.mode !== 'navigate') {
     init.mode = req.mode
   }
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    init.body = req.body
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.bodyUsed) {
+    const buf = await req.arrayBuffer()
+    if (buf.byteLength > 0) {
+      init.body = buf
+    }
   }
   return fetch(targetUrlStr, init)
 }
@@ -1105,6 +1108,15 @@ async function onFetch(e) {
 
   const isProxyPath = pathname.includes('/-----')
   if (!isProxyPath) {
+    // Bare cross-origin subresources that bypassed page URL encoding
+    // (e.g. CSS background-image: url("https://cdn...")) — restore native
+    // direct fetch instead of returning HTML 500.
+    if (
+      reqUrl.origin !== self.location.origin &&
+      urlx.isHttpProto(reqUrl.protocol)
+    ) {
+      return fetch(req)
+    }
     return makeHtmlRes('invalid url: ' + urlStr, 500)
   }
 
