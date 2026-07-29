@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260729-v28'
+  const BUILD = '20260729-v29'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -3436,8 +3436,23 @@
         if (body instanceof ArrayBuffer) {
           const bytes = new Uint8Array(body)
           let binary = ''
-          for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i])
+          const chunk = 0x8000
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(
+              null,
+              bytes.subarray(i, Math.min(i + chunk, bytes.length)),
+            )
+          }
+          encodedBody = btoa(binary)
+        } else if (ArrayBuffer.isView(body)) {
+          const bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+          let binary = ''
+          const chunk = 0x8000
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(
+              null,
+              bytes.subarray(i, Math.min(i + chunk, bytes.length)),
+            )
           }
           encodedBody = btoa(binary)
         } else if (typeof body === 'string') {

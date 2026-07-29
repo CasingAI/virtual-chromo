@@ -1502,17 +1502,25 @@ global.addEventListener('message', e => {
       return
     }
     const prefix = await netCache.readBodyDisplayPrefix(res)
+    /** @type {Record<string, unknown>} */
+    const value = {
+      headers: prefix.headers,
+      truncated: prefix.truncated,
+      status: prefix.status,
+      bytesRead: prefix.bytesRead,
+    }
+    if (prefix.binary && prefix.buffer) {
+      // ArrayBuffer — bridge.js encodes to base64 for parent (image preview).
+      value.body = prefix.buffer
+      value.encoding = 'base64'
+    } else {
+      value.body = prefix.text
+      value.encoding = 'text'
+    }
     sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {
       id: rpcId,
       ok: true,
-      value: {
-        headers: prefix.headers,
-        body: prefix.text,
-        encoding: 'text',
-        truncated: prefix.truncated,
-        status: prefix.status,
-        bytesRead: prefix.bytesRead,
-      },
+      value,
     })
   }).catch((err) => {
     sendMsg(src, MSG.SW_NETWORK_BODY_REPLY, {

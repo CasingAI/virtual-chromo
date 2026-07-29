@@ -298,7 +298,7 @@ await vcRpc('VC_NETWORK_BODY_READ_RESULT', 'VC_NETWORK_BODY_READ', {
 })
 ```
 
-成功时 `value` 含 `headers`、`body`（文本前缀或兼容 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有全局总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。**图片等二进制预览**继续用本 API（`encoding: 'base64'`）；大文本预览请用下方 `VC_NETWORK_BODY_READ_LINES`。
+成功时 `value` 含 `headers`、`body`（文本前缀，或二进制时为兼容层再编码的 base64）、`encoding`（`'text'` | `'base64'`）、`status`、`truncated?`。archive/hot **无单条体积上限**（越大越应缓存）；热缓存有全局总配额 LRU。`VC_NETWORK_BODY_READ` 从 Cache **流式读取**至约 64KB 显示前缀，`truncated: true` 表示预览截断（完整内容仍在 Cache）。**图片等二进制**经 SW 以 `ArrayBuffer` 过桥，由 bridge 编为 `encoding: 'base64'`（勿对二进制做 UTF-8 `TextDecoder`，否则会损坏字节）；大文本预览请用下方 `VC_NETWORK_BODY_READ_LINES`。
 
 ### `VC_NETWORK_BODY_READ_LINES`
 

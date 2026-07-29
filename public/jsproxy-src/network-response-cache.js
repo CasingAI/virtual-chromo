@@ -530,17 +530,47 @@ async function responseByteLength(res) {
 }
 
 /**
+ * Decide whether display-prefix bytes should stay as UTF-8 text or raw binary.
+ * Binary (image/*, octet-stream with nulls, etc.) must NOT go through TextDecoder —
+ * that irreversibly replaces non-UTF-8 bytes with U+FFFD and breaks image preview.
+ * @param {Headers|Record<string, string>|undefined} headers
+ * @param {Uint8Array} sample
+ */
+function shouldDecodeBodyAsText(headers, sample) {
+  const { contentType } = parseContentTypeMeta(headers)
+  const verdict = isTextLikeContentType(contentType)
+  if (verdict === true) {
+    return true
+  }
+  if (verdict === false) {
+    return false
+  }
+  // application/octet-stream / missing type: probe sample
+  return isUtf8TextSample(
+    sample.subarray(0, Math.min(sample.byteLength, OCTET_STREAM_TEXT_PROBE_BYTES)),
+  )
+}
+
+/**
  * @param {Response} res
+ * @returns {Promise<{
+ *   text: string,
+ *   buffer?: ArrayBuffer,
+ *   binary: boolean,
+ *   truncated: boolean,
+ *   bytesRead: number,
+ *   headers: Record<string, string>,
+ *   status: number,
+ * }>}
  */
 export async function readBodyDisplayPrefix(res) {
   const headers = headersToObject(res.headers)
   const status = res.status
   if (!res.body) {
-    return { text: '', truncated: false, bytesRead: 0, headers, status }
+    return { text: '', binary: false, truncated: false, bytesRead: 0, headers, status }
   }
 
   const reader = res.body.getReader()
-  const decoder = new TextDecoder('utf-8', { fatal: false })
   /** @type {Uint8Array[]} */
   const chunks = []
   let bytesRead = 0
@@ -588,8 +618,15 @@ export async function readBodyDisplayPrefix(res) {
     merged.set(chunk, offset)
     offset += chunk.byteLength
   }
-  const text = decoder.decode(merged)
-  return { text, truncated, bytesRead, headers, status }
+
+  if (shouldDecodeBodyAsText(res.headers, merged)) {
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(merged)
+    return { text, binary: false, truncated, bytesRead, headers, status }
+  }
+
+  // Preserve raw bytes for image / other binary preview (bridge → base64).
+  const buffer = merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)
+  return { text: '', buffer, binary: true, truncated, bytesRead, headers, status }
 }
 
 /**

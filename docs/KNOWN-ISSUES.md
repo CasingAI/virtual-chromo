@@ -285,7 +285,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **Initiator**：fetch / XHR / dynamic import() 调用栈 + 多跳 URL 链；Parser 类资源用 referrer 链兜底
 - **基础 Timing**：queueing / waiting(TTFB 近似) / download（SW 内打点）
 - **Server-Timing** 响应头解析（UI）
-- Preview：JSON 格式化、文本（`VC_NETWORK_BODY_READ_LINES` 按需读行）；图片 base64（`VC_NETWORK_BODY_READ`）；音视频等二进制占位不渲染
+- Preview：JSON 格式化、文本（`VC_NETWORK_BODY_READ_LINES` 按需读行）；图片 base64（`VC_NETWORK_BODY_READ`，build `20260729-v29`+ 对二进制保留原始字节再 base64，修复此前 UTF-8 解码损坏图片的问题）；音视频等二进制占位不渲染
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
 - **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）；代理 `fetch` 失败时另有 `sourceHost`、`proxyUrl`，且 `errorText` 含底层 `err.message`（如 `Failed to fetch`）与尝试的网关 URL（build `20260729-v26`+）
 - **POST body 转发**：曾因直接转发 `ReadableStream` body 未设 `duplex` 导致 Chrome 抛错、大量 POST（如 B 站 heartbeat）失败；build `20260729-v27`+ 改为在 SW / Worker 转发前缓冲为 `ArrayBuffer`
