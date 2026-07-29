@@ -346,7 +346,7 @@ await vcRpc('VC_NETWORK_BODY_READ_LINES_RESULT', 'VC_NETWORK_BODY_READ_LINES', {
 | 正在加载 | `VC_LOADING` | `{ loading: true, url? }` | 已有 |
 | 加载完成 | `VC_NAVIGATED` | `{ url, title, canGoBack, canGoForward }` | 已有 |
 | 加载结束 | `VC_LOADING` | `{ loading: false }` | 已有（常与 `VC_NAVIGATED` 连续触发） |
-| 加载失败 | `VC_LOAD_FAILED` | `{ url, message?, code? }` | 已有 |
+| 加载失败 | `VC_LOAD_FAILED` | `{ url, message?, code?, networkCount?, latestNetworkId? }` | 已有 |
 
 典型成功序列（**仅父级下发 `VC_NAVIGATE` 等命令时**）：
 
@@ -484,9 +484,13 @@ Service Worker 注册完成，bridge 可接收导航命令。
 // ['VC_LOAD_FAILED', {
 //   url: 'https://example.com',
 //   message: '...',
-//   code: 'LOAD_NETWORK_ERROR'
+//   code: 'LOAD_NETWORK_ERROR',
+//   networkCount: 3,           // optional: bridge networkBuffer size at failure
+//   latestNetworkId: 'uuid-…', // optional: newest network entry id, or null
 // }]
 ```
+
+`networkCount` / `latestNetworkId` 为诊断字段：父级若 UI 列表为空但 `networkCount > 0`，应立刻用 `VC_NETWORK_READ`（**不传 `after`**）全量回补。加载失败路径不会触发 `VC_NAVIGATED`，父级须在 `VC_LOAD_FAILED` 上主动拉取网络。
 
 ### `VC_CONSOLE_UPDATED`
 
@@ -630,6 +634,8 @@ Service Worker 网络 ring buffer 有新条目或既有条目状态更新（如 
 
 entry 字段：`id`, `ts`, `method`, `url`（解码后的目标 URL）, `status`, `type`（`req.destination`）, `size`, `duration`（ms）, `failed`, `bypass`（passthrough 直连）, `pending`（进行中）, `hasBody`（archive 是否存了 body）, `fromCache`（是否来自热缓存）, `devtoolsId`（父 tab Disable-cache 绑定键，不参与 hot key）, `requestHeaders`（请求头对象，序列化软上限约 32KB）, `requestHeadersTruncated`, `referrer`, `referrerPolicy`, `timing`（SW 内 queueing / waiting / download 近似值）, `source`（资源供给渠道：`cache` / `bypass` / `direct` / `cdn` / `proxy` / `native`）, `sourceHost`（`proxy` 时的网关主机名）, `errorCode`（机器可读失败码，如 `ERR_PROXY_FETCH_FAILED` / `ERR_PROXY_BODY_UNUSABLE` / `ERR_PROXY_NETWORK` / `ERR_ABORTED` / `GATEWAY_*` / `HTTP_404`）, `errorText`（人类可读失败原因，代理失败时含网关 host 与底层 message）, `proxyUrl`（代理失败时 SW 尝试的网关 URL，约 512 字符截断）, `initiatorKind`（`fetch` / `xhr` / `import` / `parser` / `other`）, `initiatorChain`（从文档根到资源的 URL 链）, `initiatorStack`（清洗后的 JS 栈帧，Parser 为空）, `initiatorScriptUrl`（调用方脚本 URL）。
 
+`after` 游标：若 UUID 仍在 bridge `networkBuffer` 中，只返回其后的增量；若找不到（客户端清空列表、buffer 轮转等），**从 buffer 头部全量重发**（客户端按 id upsert）。省略 `after` 等价于全量拉取（受 `limit` 限制）。
+
 viewer 与 SW 通过 `PAGE_BUILD_GET { reqId }` / `SW_BUILD_REPLY { reqId, vc_build, vc_version }` 交换 build；不一致时：
 
 - **空白页 / 尚未导航**（`currentContentUrl` 为空且 content 为 blank）：静默 `skipWaiting` + `location.reload()`，**不**上报 `VC_ERROR`、**不**显示 Fatal UI（最多 3 次，超出后仍 Fatal）
@@ -684,7 +690,7 @@ await vcRpc('VC_NETWORK_HOT_PROBE_RESULT', 'VC_NETWORK_HOT_PROBE', {
 // value: { exists: true|false, fresh: true|false, expiresAt?: number }
 ```
 
-**DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。
+**DevTools 式实时 UI**：监听 `VC_NETWORK_UPDATED`（优先用 payload.entry upsert）→ 必要时用 `after: lastSeenId` 调 `VC_NETWORK_READ` 增量拉取。若 `after` 游标在 bridge buffer 中找不到（客户端清空 / buffer 轮转），bridge **全量重发**当前窗口（客户端按 id upsert，不会重复）。`VC_LOAD_FAILED` 时父级应再做一次不带 `after` 的全量拉取。
 
 ### `VC_SCREENSHOT` / `VC_SCREENSHOT_RESULT`
 
@@ -823,7 +829,7 @@ function vcScreenshot(iframe, options = {}, { timeout = 60_000, targetOrigin = '
 4. 监听页面生命周期：`VC_NAVIGATING` / `VC_LOADING` / `VC_NAVIGATED` / `VC_LOAD_FAILED`
 5. 子页面内的**读信息、操作 DOM、等待逻辑**优先通过 `vcEval()`（Promise + 超时）执行
 6. Console：监听 `VC_CONSOLE_UPDATED`，用 `VC_CONSOLE_READ` + `after` UUID 增量拉取
-7. Network：监听 `VC_NETWORK_UPDATED`，用 `VC_NETWORK_READ` + `after` UUID 增量拉取
+7. Network：监听 `VC_NETWORK_UPDATED`，用 `VC_NETWORK_READ` + `after` UUID 增量拉取；`VC_LOAD_FAILED` 时用不带 `after` 的全量拉取回补
 8. 截图：用 `vcScreenshot()` 获取子页面 Base64 图像（供 vision / 调试）
 9. 用户点击后退/前进/刷新时发送对应命令
 

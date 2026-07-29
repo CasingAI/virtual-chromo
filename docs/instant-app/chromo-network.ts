@@ -4,6 +4,9 @@
  *
  * Network DevTools helper (VC_NETWORK_UPDATED + VC_NETWORK_READ + body cache).
  *
+ * After VC_LOAD_FAILED, call `read({ full: true })` / `readFull()` (omit `after`)
+ * so the UI resyncs even when the success-path onNavigated pull never runs.
+ *
  * Hot cache (SW `vc-net-hot`) is global: key = method + url (normalized) with
  * Cache-Control TTL. Redirects keep the original request URL as the hot key.
  * `devtoolsId` only binds Disable cache; it is not part of the hot key.
@@ -171,15 +174,25 @@ export function createChromoNetwork(
       return () => window.removeEventListener('message', onMessage)
     },
 
-    async read(opts: { after?: string; limit?: number } = {}): Promise<NetworkReadResult> {
+    async read(opts: { after?: string; limit?: number; full?: boolean } = {}): Promise<NetworkReadResult> {
+      // full: true → omit `after` so bridge returns from buffer start (id-upsert safe).
+      const after = opts.full ? undefined : (opts.after ?? lastSeenId || undefined)
       const value = await vcRpc<NetworkReadResult>('VC_NETWORK_READ_RESULT', 'VC_NETWORK_READ', {
-        after: opts.after ?? lastSeenId,
+        ...(after ? { after } : {}),
         limit: opts.limit ?? 100,
       })
       if (value?.latestId) {
         lastSeenId = value.latestId
       }
       return value ?? { entries: [], latestId: lastSeenId || null }
+    },
+
+    /**
+     * After VC_LOAD_FAILED / cursor desync: full resync without `after`.
+     * Merge returned entries by id on the UI side.
+     */
+    async readFull(opts: { limit?: number } = {}): Promise<NetworkReadResult> {
+      return this.read({ ...opts, full: true })
     },
 
     async readBody(entryId: string): Promise<NetworkBodyReadResult> {

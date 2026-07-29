@@ -265,6 +265,8 @@
       let lastConsoleId = ''
       let lastNetworkId = ''
       let networkPullTimer = null
+      /** @type {Set<string>} */
+      const networkSeenIds = new Set()
       const DEFAULT_RPC_TIMEOUT = 30000
 
       function post(cmd, payload) {
@@ -403,6 +405,13 @@
         if (!entries || !entries.length) return
         for (let i = 0; i < entries.length; i++) {
           const entry = entries[i]
+          if (entry.id && networkSeenIds.has(entry.id)) {
+            // Upsert: skip duplicate rows from full resync (demo keeps first snapshot).
+            continue
+          }
+          if (entry.id) {
+            networkSeenIds.add(entry.id)
+          }
           const el = document.createElement('div')
           el.className = 'network-entry'
           if (entry.failed) el.classList.add('is-failed')
@@ -441,10 +450,24 @@
         networkList.scrollTop = networkList.scrollHeight
       }
 
-      function pullNetworkDelta() {
+      function pullNetworkDelta(opts) {
         if (!ready) return Promise.resolve()
-        return vcNetworkRead(lastNetworkId)
+        const full = opts && opts.full
+        // full: omit after → bridge returns from buffer start (id-upsert safe).
+        const after = full ? '' : lastNetworkId
+        return vcNetworkRead(after)
           .then(function (value) {
+            if (
+              !full &&
+              value &&
+              (!value.entries || !value.entries.length) &&
+              value.latestId &&
+              value.latestId !== lastNetworkId &&
+              !networkList.querySelector('.network-entry')
+            ) {
+              // Cursor desync with empty UI — resync once without after.
+              return pullNetworkDelta({ full: true })
+            }
             if (value && value.entries && value.entries.length) {
               appendNetworkEntries(value.entries)
             }
@@ -605,6 +628,14 @@
               (payload && payload.message || payload && payload.code || 'unknown'),
             )
             console.error('[virtual-chromo load failed]', payload)
+            if (payload && typeof payload.networkCount === 'number' && payload.networkCount > 0) {
+              console.warn(
+                '[virtual-chromo] load failed with networkCount=%s — full network pull',
+                payload.networkCount,
+              )
+            }
+            // Failure path never gets VC_NAVIGATED; resync network without after.
+            pullNetworkDelta({ full: true })
             break
           case 'VC_ERROR':
             setStatus('错误: ' + (payload && payload.message || 'unknown'))

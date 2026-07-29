@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260729-v26'
+  const BUILD = '20260729-v28'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -467,6 +467,8 @@
         ['allowed origins', data.allowedOrigins || '(all)'],
         ['can go back', data.canGoBack ? 'yes' : 'no'],
         ['can go forward', data.canGoForward ? 'yes' : 'no'],
+        ['network count', String(data.networkCount ?? 0)],
+        ['latest network id', data.latestNetworkId || '-'],
         ['navProbe', data.navProbe ? 'on' : 'off'],
       ]
 
@@ -1263,6 +1265,9 @@
       parentOrigin: window.parent === window ? '(top)' : '(embedded)',
       networkDisableCache: networkDisableCache,
       networkDevtoolsId: networkDevtoolsId || ensureNetworkDevtoolsId(),
+      networkCount: networkBuffer.length,
+      latestNetworkId:
+        networkBuffer.length > 0 ? networkBuffer[networkBuffer.length - 1].id : null,
       navProbe: navProbe,
       frameBustGuard: frameBustGuard,
       history: navHistory.slice(),
@@ -4179,8 +4184,13 @@
     let startIndex = 0
     if (after) {
       const idx = networkBuffer.findIndex((entry) => entry.id === after)
-      // Cursor missing (buffer rotated): do not resend the whole buffer — empty delta.
-      startIndex = idx >= 0 ? idx + 1 : networkBuffer.length
+      if (idx >= 0) {
+        startIndex = idx + 1
+      } else {
+        // Cursor missing (buffer rotated / client cleared): full resync.
+        // Clients upsert by id, so replaying the window is safe.
+        startIndex = 0
+      }
     }
 
     const entries = networkBuffer.slice(startIndex, startIndex + limit)
@@ -4292,7 +4302,14 @@
    */
   function emitLoadFailed(url, message, code) {
     loading = false
-    postToParent('VC_LOAD_FAILED', { url, message, code })
+    postToParent('VC_LOAD_FAILED', {
+      url,
+      message,
+      code,
+      networkCount: networkBuffer.length,
+      latestNetworkId:
+        networkBuffer.length > 0 ? networkBuffer[networkBuffer.length - 1].id : null,
+    })
     postToParent('VC_LOADING', { loading: false, url: url || currentContentUrl || undefined })
   }
 
