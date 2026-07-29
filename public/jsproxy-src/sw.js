@@ -383,13 +383,19 @@ async function forward(req, urlObj, cliUrlObj, redirNum, clientId, hotKeyUrl) {
 
     timingMarks.startedAt = Date.now()
     const r = await network.launch(req, urlObj, cliUrlObj)
-    if (!r) {
+    if (!r || r.error) {
+      const e = r && r.error
+        ? r.error
+        : { code: 'ERR_PROXY_FETCH_FAILED', text: '无法连接代理网关' }
       networkLog.record(req, urlObj, null, startMs, {
         failed: true,
         id: entryId,
         devtoolsId,
-        errorCode: 'ERR_PROXY_FETCH_FAILED',
-        errorText: '无法连接代理网关',
+        source: 'proxy',
+        sourceHost: e.sourceHost || '',
+        errorCode: e.code || 'ERR_PROXY_FETCH_FAILED',
+        errorText: e.text || '无法连接代理网关',
+        proxyUrl: typeof e.proxyUrl === 'string' ? e.proxyUrl : undefined,
         timing: currentTiming({ finishedAt: Date.now() }),
         ...initiatorMeta,
       })

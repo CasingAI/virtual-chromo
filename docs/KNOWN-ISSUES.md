@@ -287,7 +287,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 - **Server-Timing** 响应头解析（UI）
 - Preview：JSON 格式化、文本（`VC_NETWORK_BODY_READ_LINES` 按需读行）；图片 base64（`VC_NETWORK_BODY_READ`）；音视频等二进制占位不渲染
 - **Served from**：标明 cache / bypass / direct / cdn / proxy / native；未命中热缓存时旁有 **?** 条件诊断表
-- **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）
+- **失败原因**：`errorCode` / `errorText`（代理失败、网关错误、HTTP 4xx/5xx）；代理 `fetch` 失败时另有 `sourceHost`、`proxyUrl`，且 `errorText` 含底层 `err.message`（如 `Failed to fetch`）与尝试的网关 URL（build `20260729-v26`+）
 
 ### DevTools 热缓存（build `20260728-v12`+）
 
@@ -339,7 +339,7 @@ instant-app Network 详情抽屉对齐 Chrome DevTools 结构（Headers / Previe
 7. Chromo 打开 2 分钟：Network **不应**周期性出现 `GET /bridge.js`
 8. Console 执行 `fetch('/')`：Initiator 显示 kind=fetch 与调用栈；静态 `<script src>` 显示 kind=parser、无栈
 9. Timing：pending → done 后有条形图；热缓存命中 waiting/download 接近 0
-10. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode
+10. 失败请求：列表 `(failed)` 或状态码；详情有 Failure reason / errorCode；代理失败时应有 `sourceHost` + `proxyUrl` + 真实 message（非仅「无法连接代理网关」）
 11. 模拟 bridge/SW build 不一致：出现 Fatal 页，点「重新加载」后恢复
 12. `VC_CLEAR_STATE` 后 cookie / storage / hot 清空；未 clear 时重启仍可能命中未过期 hot
 

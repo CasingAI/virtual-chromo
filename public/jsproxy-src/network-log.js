@@ -171,6 +171,7 @@ export function tapBodySize(body, onSize) {
  *   sourceHost?: string,
  *   errorCode?: string,
  *   errorText?: string,
+ *   proxyUrl?: string,
  *   initiatorKind?: string,
  *   initiatorChain?: string[],
  *   initiatorStack?: string[],
@@ -238,6 +239,8 @@ export function record(req, urlObj, res, startMs, meta) {
   }
   const sourceHost =
     meta && typeof meta.sourceHost === 'string' ? meta.sourceHost : ''
+  const proxyUrl =
+    meta && typeof meta.proxyUrl === 'string' ? meta.proxyUrl : ''
 
   let errorCode =
     meta && typeof meta.errorCode === 'string' && meta.errorCode ? meta.errorCode : ''
@@ -280,6 +283,7 @@ export function record(req, urlObj, res, startMs, meta) {
     sourceHost: sourceHost || undefined,
     errorCode: errorCode || undefined,
     errorText: errorText || undefined,
+    proxyUrl: proxyUrl || undefined,
     initiatorKind:
       meta && typeof meta.initiatorKind === 'string' ? meta.initiatorKind : undefined,
     initiatorChain:

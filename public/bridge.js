@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v25'
+  const BUILD = '20260729-v26'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -4079,7 +4079,7 @@
   }
 
   /**
-   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, hotStored?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} raw
+   * @param {{ id?: string, ts?: number, method?: string, url?: string, status?: number, type?: string, size?: number, duration?: number, failed?: boolean, bypass?: boolean, pending?: boolean, hasBody?: boolean, hotStored?: boolean, fromCache?: boolean, devtoolsId?: string, requestHeaders?: Record<string, string>, requestHeadersTruncated?: boolean, referrer?: string, referrerPolicy?: string, timing?: object, source?: string, sourceHost?: string, errorCode?: string, errorText?: string, proxyUrl?: string, initiatorKind?: string, initiatorChain?: string[], initiatorStack?: string[], initiatorScriptUrl?: string }} raw
    */
   function appendNetworkEntry(raw) {
     const id = typeof raw.id === 'string' ? raw.id : String(Date.now())
@@ -4109,6 +4109,7 @@
       sourceHost: typeof raw.sourceHost === 'string' ? raw.sourceHost : '',
       errorCode: typeof raw.errorCode === 'string' ? raw.errorCode : '',
       errorText: typeof raw.errorText === 'string' ? raw.errorText : '',
+      proxyUrl: typeof raw.proxyUrl === 'string' ? raw.proxyUrl : '',
       initiatorKind: typeof raw.initiatorKind === 'string' ? raw.initiatorKind : '',
       initiatorChain: Array.isArray(raw.initiatorChain)
         ? raw.initiatorChain.filter((u) => typeof u === 'string')

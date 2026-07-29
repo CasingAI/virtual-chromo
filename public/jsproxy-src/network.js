@@ -316,6 +316,72 @@ function updateReqHeaders(reqOpt, info) {
 
 
 const MAX_RETRY = 5
+const PROXY_URL_MAX = 512
+const ERROR_TEXT_MAX = 600
+
+/**
+ * @param {string} s
+ * @param {number} max
+ */
+function truncateStr(s, max) {
+  if (!s || s.length <= max) {
+    return s || ''
+  }
+  return s.slice(0, max - 1) + '…'
+}
+
+/**
+ * Classify gateway fetch failure for Network DevTools.
+ * @param {any} err
+ * @param {{ networkResponse?: boolean }} [opts]
+ * @returns {string}
+ */
+function classifyProxyError(err, opts) {
+  if (opts && opts.networkResponse) {
+    return 'ERR_PROXY_NETWORK'
+  }
+  if (err && (err.name === 'AbortError' || err.code === 20)) {
+    return 'ERR_ABORTED'
+  }
+  const msg = String((err && err.message) || err || '').toLowerCase()
+  if (msg.includes('body stream') || msg.includes('disturbed') || msg.includes('body used')) {
+    return 'ERR_PROXY_BODY_UNUSABLE'
+  }
+  return 'ERR_PROXY_FETCH_FAILED'
+}
+
+/**
+ * @param {string} host
+ * @param {string} proxyUrl
+ * @param {any} err
+ * @param {{ networkResponse?: boolean }} [opts]
+ * @returns {{ code: string, text: string, sourceHost: string, proxyUrl: string }}
+ */
+function buildProxyError(host, proxyUrl, err, opts) {
+  const code = classifyProxyError(err, opts)
+  const msg =
+    code === 'ERR_ABORTED'
+      ? '(canceled)'
+      : code === 'ERR_PROXY_NETWORK'
+        ? 'network error response'
+        : String((err && err.message) || err || 'fetch failed').slice(0, 200)
+  const hostLabel = host || '(unknown)'
+  const shortProxy = truncateStr(proxyUrl || '', PROXY_URL_MAX)
+  let text =
+    code === 'ERR_ABORTED'
+      ? '(canceled)'
+      : '代理网关 ' + hostLabel + ' 不可达: ' + msg
+  if (shortProxy && code !== 'ERR_ABORTED') {
+    text += '\n→ ' + shortProxy
+  }
+  text = truncateStr(text, ERROR_TEXT_MAX)
+  return {
+    code,
+    text,
+    sourceHost: host || '',
+    proxyUrl: shortProxy,
+  }
+}
 
 /**
  * @param {Request} req 
@@ -413,6 +479,12 @@ export async function launch(req, urlObj, cliUrlObj) {
   /** @type {Headers} */
   let resHdr
 
+  /** @type {string} */
+  let lastProxyUrl = ''
+  /** @type {any} */
+  let lastError = null
+  /** @type {boolean} */
+  let lastWasNetworkResponse = false
 
   for (let i = 0; i < MAX_RETRY; i++) {
     if (i === 0 && host) {
@@ -423,6 +495,7 @@ export async function launch(req, urlObj, cliUrlObj) {
     
     const rawUrl = urlx.delHash(urlObj.href)
     let proxyUrl = route.genUrl(host, 'http') + '/' + rawUrl
+    lastProxyUrl = proxyUrl
 
     // 即使未命中缓存，在请求“加速节点”时也能带上文件信息
     if (rawInfo) {
@@ -437,11 +510,23 @@ export async function launch(req, urlObj, cliUrlObj) {
       updateReqHeaders(reqOpt, reqMap)
       res = await fetch(proxyUrl, reqOpt)
     } catch (err) {
-      console.warn('fetch fail:', proxyUrl)
+      lastError = err
+      lastWasNetworkResponse = false
+      console.warn('fetch fail:', proxyUrl, err)
       break
       // TODO: 重试其他线路
       // route.setFailHost(host)
     }
+
+    // Response.error() / opaque network failure from Worker
+    if (res && res.type === 'error') {
+      lastError = new TypeError('network error response')
+      lastWasNetworkResponse = true
+      console.warn('fetch fail:', proxyUrl, lastError)
+      res = null
+      break
+    }
+
     resHdr = res.headers
 
     // 检测浏览器是否支持 aceh: *
@@ -470,7 +555,11 @@ export async function launch(req, urlObj, cliUrlObj) {
   }
 
   if (!res) {
-    return
+    return {
+      error: buildProxyError(host, lastProxyUrl, lastError, {
+        networkResponse: lastWasNetworkResponse,
+      }),
+    }
   }
 
   const {

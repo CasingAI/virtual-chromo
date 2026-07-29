@@ -50,6 +50,8 @@ export type NetworkEntry = {
   sourceHost?: string
   errorCode?: string
   errorText?: string
+  /** Gateway URL attempted by SW when proxy fetch failed. */
+  proxyUrl?: string
 }
 
 export type NetworkReadResult = {
