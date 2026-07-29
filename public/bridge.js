@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v23'
+  const BUILD = '20260728-v24'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -81,6 +81,12 @@
     /** @type {(() => boolean) | null} */
     let navProbeGetter = null
 
+    /** @type {((enabled: boolean) => void) | null} */
+    let frameBustGuardSetter = null
+
+    /** @type {(() => boolean) | null} */
+    let frameBustGuardGetter = null
+
     /** @type {boolean} */
     let panelOpen = false
 
@@ -124,6 +130,9 @@
 
     /** @type {HTMLInputElement | null} */
     let navProbeCheck = null
+
+    /** @type {HTMLInputElement | null} */
+    let frameBustGuardCheck = null
 
     /** @type {HTMLElement | null} */
     let navList = null
@@ -375,11 +384,20 @@
       navProbeCheck.checked = on
     }
 
+    function syncFrameBustGuardCheck() {
+      if (!frameBustGuardCheck) {
+        return
+      }
+      const on = frameBustGuardGetter ? !!frameBustGuardGetter() : true
+      frameBustGuardCheck.checked = on
+    }
+
     function renderNav() {
       if (!navList) {
         return
       }
       syncNavProbeCheck()
+      syncFrameBustGuardCheck()
       navList.innerHTML = ''
       const frag = document.createDocumentFragment()
       for (let i = navEntries.length - 1; i >= 0; i--) {
@@ -628,6 +646,8 @@
         '<div class="vcd-nav-toolbar">' +
         '<label class="vcd-nav-toggle"><input type="checkbox" class="vcd-nav-probe" /> 导航探针</label>' +
         '<span class="vcd-nav-hint">开启后不上报 VC_CLICK/LOCATION/HISTORY，在此显示触发栈</span>' +
+        '<label class="vcd-nav-toggle"><input type="checkbox" class="vcd-frame-bust" checked /> 吞破框 open(_top)</label>' +
+        '<span class="vcd-nav-hint">默认开：同 URL 的 open(_top/_self/_parent) 不上报。关：照常 VC_LOCATION，便于测 AST</span>' +
         '</div>' +
         '<div class="vcd-nav-list"></div>' +
         '</div>' +
@@ -706,6 +726,7 @@
       networkList = root.querySelector('[data-pane="network"]')
       navPane = root.querySelector('[data-pane="nav"]')
       navProbeCheck = root.querySelector('.vcd-nav-probe')
+      frameBustGuardCheck = root.querySelector('.vcd-frame-bust')
       navList = root.querySelector('.vcd-nav-list')
       stateView = root.querySelector('[data-pane="state"]')
 
@@ -750,6 +771,15 @@
         navProbeCheck.addEventListener('change', function () {
           if (navProbeSetter) {
             navProbeSetter(!!navProbeCheck.checked)
+          }
+          updateBadge()
+        })
+      }
+
+      if (frameBustGuardCheck) {
+        frameBustGuardCheck.addEventListener('change', function () {
+          if (frameBustGuardSetter) {
+            frameBustGuardSetter(!!frameBustGuardCheck.checked)
           }
           updateBadge()
         })
@@ -816,8 +846,19 @@
       syncNavProbeCheck()
     }
 
+    /**
+     * @param {(enabled: boolean) => void} setter
+     * @param {() => boolean} getter
+     */
+    function setFrameBustGuardHandlers(setter, getter) {
+      frameBustGuardSetter = setter
+      frameBustGuardGetter = getter
+      syncFrameBustGuardCheck()
+    }
+
     function syncNavProbeUi() {
       syncNavProbeCheck()
+      syncFrameBustGuardCheck()
       updateBadge()
       if (panelOpen && activeTab === 'nav') {
         renderNav()
@@ -847,6 +888,7 @@
       nav: addNav,
       setStateProvider,
       setNavProbeHandlers,
+      setFrameBustGuardHandlers,
       syncNavProbeUi,
     }
   })()
@@ -1120,8 +1162,19 @@
   /** @type {boolean} */
   let navProbe = false
 
+  /**
+   * When true (default), open(_, '_top'|'_self'|'_parent') is consumed in the
+   * viewer instead of being posted as VC_LOCATION. Turn off to A/B-test AST
+   * frame spoof (stage 2).
+   * @type {boolean}
+   */
+  let frameBustGuard = true
+
   function syncDebugOpts() {
-    window.__vcDebugOpts = { navProbe: !!navProbe }
+    window.__vcDebugOpts = {
+      navProbe: !!navProbe,
+      frameBustGuard: !!frameBustGuard,
+    }
   }
 
   /**
@@ -1134,6 +1187,19 @@
     DebugPanel.syncNavProbeUi()
     if (!(opts && opts.silent)) {
       vlog('info', ['navProbe:', navProbe ? 'on' : 'off'])
+    }
+  }
+
+  /**
+   * @param {boolean} enabled
+   * @param {{ silent?: boolean }} [opts]
+   */
+  function setFrameBustGuard(enabled, opts) {
+    frameBustGuard = !!enabled
+    syncDebugOpts()
+    DebugPanel.syncNavProbeUi()
+    if (!(opts && opts.silent)) {
+      vlog('info', ['frameBustGuard:', frameBustGuard ? 'on' : 'off'])
     }
   }
 
@@ -1198,6 +1264,7 @@
       networkDisableCache: networkDisableCache,
       networkDevtoolsId: networkDevtoolsId || ensureNetworkDevtoolsId(),
       navProbe: navProbe,
+      frameBustGuard: frameBustGuard,
       history: navHistory.slice(),
     }
   }
@@ -1237,7 +1304,16 @@
         return navProbe
       },
     )
+    DebugPanel.setFrameBustGuardHandlers(
+      function (enabled) {
+        setFrameBustGuard(enabled)
+      },
+      function () {
+        return frameBustGuard
+      },
+    )
     DebugPanel.init({ version: VERSION, build: BUILD })
+    syncDebugOpts()
     ensureNetworkDevtoolsId()
 
     navigator.serviceWorker.addEventListener('controllerchange', function () {
@@ -2938,7 +3014,8 @@
     const url = typeof out.url === 'string' ? out.url : ''
 
     // Frame-bust: open(_, '_top'|'_self'|'_parent') is never "open a new tab".
-    if (method === 'open' && isSameTabOpenTarget(target)) {
+    // Guarding is optional so AST frame-spoof (stage 2) can be A/B tested.
+    if (frameBustGuard && method === 'open' && isSameTabOpenTarget(target)) {
       if (!url || urlsNavEquivalent(url, currentContentUrl)) {
         vlog('info', ['frame-bust open consumed:', url || '(empty)', 'target=' + target])
         return
@@ -3195,6 +3272,9 @@
     const data = payload && typeof payload === 'object' ? payload : {}
     if (typeof data.navProbe === 'boolean') {
       setNavProbe(data.navProbe)
+    }
+    if (typeof data.frameBustGuard === 'boolean') {
+      setFrameBustGuard(data.frameBustGuard)
     }
   }
 

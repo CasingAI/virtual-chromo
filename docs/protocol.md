@@ -276,12 +276,14 @@ iframe.contentWindow.postMessage(['VC_DEBUG_PANEL', { enabled: true }], '*')
 ```javascript
 iframe.contentWindow.postMessage(['VC_DEBUG_OPTIONS', {
   navProbe: true,
+  frameBustGuard: false, // optional; default true
 }], '*')
 ```
 
 - `navProbe: true`：切断父侧自动开 Tab / 自动 `VC_NAVIGATE` 的反馈环；用于排查站点脚本在加载时调用 `window.open` / 改 `location` 等
 - `navProbe: false`：恢复正常 `VC_*` 上报
-- 也可在 viewer 右下角「调」→「导航」checkbox 本地开关（与本命令同源状态）
+- `frameBustGuard`（build `20260728-v24`+，默认 `true`）：viewer 吞掉同 Tab `open(_top|_self|_parent)`（同 URL noop / 不同 URL 在 viewer 内导航）。设为 `false` 时照常上报 `VC_LOCATION`，便于 A/B 验证 jsfilter AST（阶段 2）
+- 也可在 viewer「调」→「导航」本地开关（与本命令同源状态）
 
 **父应用不得根据 `VC_DEBUG_NAV` 执行 `createTab` / `VC_NAVIGATE`。**
 

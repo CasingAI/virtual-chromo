@@ -4,14 +4,20 @@
  *
  * - VC_DEBUG_PANEL: show/hide viewer floating DebugPanel (green 「调」)
  * - VC_DEBUG_OPTIONS + VC_DEBUG_NAV: navigation probe
+ * - frameBustGuard: bridge swallow of open(_top) (default on)
  *
  * When navProbe is on, virtual-chromo suppresses VC_CLICK / VC_LOCATION /
  * VC_HISTORY to the parent and emits VC_DEBUG_NAV with a filtered stack.
  * Do NOT createTab / VC_NAVIGATE from VC_DEBUG_NAV.
+ *
+ * To A/B-test jsfilter AST (stage 2): set frameBustGuard false so open(_top)
+ * is posted as VC_LOCATION again.
  */
 
 export type DebugOptions = {
   navProbe?: boolean
+  /** Default true. When false, open(_top/_self/_parent) is reported normally. */
+  frameBustGuard?: boolean
 }
 
 export type DebugNavEvent = {
@@ -33,17 +39,22 @@ export function createChromoDebug(
 ) {
   const targetOrigin = options.targetOrigin ?? '*'
   let navProbe = false
+  let frameBustGuard = true
   let debugPanelEnabled = false
 
   function setDebugOptions(opts: DebugOptions = {}) {
     if (typeof opts.navProbe === 'boolean') {
       navProbe = opts.navProbe
     }
+    if (typeof opts.frameBustGuard === 'boolean') {
+      frameBustGuard = opts.frameBustGuard
+    }
     iframe.contentWindow?.postMessage(
       [
         'VC_DEBUG_OPTIONS',
         {
           navProbe: !!navProbe,
+          frameBustGuard: !!frameBustGuard,
         },
       ],
       targetOrigin,
@@ -63,6 +74,10 @@ export function createChromoDebug(
       return navProbe
     },
 
+    isFrameBustGuardEnabled(): boolean {
+      return frameBustGuard
+    },
+
     isDebugPanelEnabled(): boolean {
       return debugPanelEnabled
     },
@@ -73,6 +88,10 @@ export function createChromoDebug(
 
     setNavProbe(enabled: boolean) {
       setDebugOptions({ navProbe: enabled })
+    },
+
+    setFrameBustGuard(enabled: boolean) {
+      setDebugOptions({ frameBustGuard: enabled })
     },
 
     onDebugNav(cb: (payload: DebugNavEvent) => void): () => void {
