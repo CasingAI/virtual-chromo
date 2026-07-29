@@ -1,7 +1,7 @@
 // Bump VC_BUILD when bridge / inject / conf change. Keep in sync with public/sw.js.
 // Assign on self (no var/let/const) so importScripts + periodic re-eval never redeclare.
 self.VC_VERSION = '1.3.0'
-self.VC_BUILD = '20260728-v19'
+self.VC_BUILD = '20260728-v20'
 
 jsproxy_config({
   ver: '1',

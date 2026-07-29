@@ -2,7 +2,9 @@
  * Reference SDK for instant-app — copy to:
  *   instant-app/src/apps/chromo/chromo-debug.ts
  *
- * Navigation probe (VC_DEBUG_OPTIONS + VC_DEBUG_NAV).
+ * - VC_DEBUG_PANEL: show/hide viewer floating DebugPanel (green 「调」)
+ * - VC_DEBUG_OPTIONS + VC_DEBUG_NAV: navigation probe
+ *
  * When navProbe is on, virtual-chromo suppresses VC_CLICK / VC_LOCATION /
  * VC_HISTORY to the parent and emits VC_DEBUG_NAV with a filtered stack.
  * Do NOT createTab / VC_NAVIGATE from VC_DEBUG_NAV.
@@ -31,6 +33,7 @@ export function createChromoDebug(
 ) {
   const targetOrigin = options.targetOrigin ?? '*'
   let navProbe = false
+  let debugPanelEnabled = false
 
   function setDebugOptions(opts: DebugOptions = {}) {
     if (typeof opts.navProbe === 'boolean') {
@@ -47,12 +50,26 @@ export function createChromoDebug(
     )
   }
 
+  function setDebugPanelEnabled(enabled: boolean) {
+    debugPanelEnabled = !!enabled
+    iframe.contentWindow?.postMessage(
+      ['VC_DEBUG_PANEL', { enabled: debugPanelEnabled }],
+      targetOrigin,
+    )
+  }
+
   return {
     isNavProbeEnabled(): boolean {
       return navProbe
     },
 
+    isDebugPanelEnabled(): boolean {
+      return debugPanelEnabled
+    },
+
     setDebugOptions,
+
+    setDebugPanelEnabled,
 
     setNavProbe(enabled: boolean) {
       setDebugOptions({ navProbe: enabled })

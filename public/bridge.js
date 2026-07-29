@@ -7,7 +7,7 @@
   'use strict'
 
   const VERSION = '1.3.0'
-  const BUILD = '20260728-v19'
+  const BUILD = '20260728-v20'
   /** New-tab start page (Worker static asset); not a proxied site. */
   const BLANK_PATH = '/blank.html'
   const PROXY_PREFIX = '/-----'
@@ -83,6 +83,9 @@
 
     /** @type {boolean} */
     let panelOpen = false
+
+    /** @type {boolean} */
+    let uiVisible = window.parent === window
 
     /** @type {string} */
     let versionLabel = ''
@@ -633,13 +636,14 @@
 
       const style = document.createElement('style')
       style.textContent =
-        '.vcd-root{position:fixed;right:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
+        '.vcd-root{position:fixed;left:10px;bottom:10px;z-index:2147483646;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#e8e8e8;pointer-events:none}' +
+        '.vcd-root[hidden]{display:none!important}' +
         '.vcd-root *{box-sizing:border-box}' +
         '.vcd-switch{pointer-events:auto;width:36px;height:36px;padding:0;border:0;border-radius:18px;background:#2f9e44;color:#fff;font-size:12px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer;position:relative}' +
         '.vcd-switch:active{transform:scale(.96)}' +
         '.vcd-badge{position:absolute;top:-3px;right:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:#e03131;color:#fff;font-size:9px;line-height:14px;text-align:center}' +
         /* hidden must win over display:flex — this was why close did nothing */
-        '.vcd-panel{pointer-events:auto;position:absolute;right:0;bottom:44px;width:min(92vw,360px);height:min(56vh,420px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
+        '.vcd-panel{pointer-events:auto;position:absolute;left:0;bottom:44px;width:min(92vw,360px);height:min(56vh,420px);display:none;flex-direction:column;border-radius:8px;overflow:hidden;background:#1a1b1e;border:1px solid #343a40;box-shadow:0 6px 22px rgba(0,0,0,.4)}' +
         '.vcd-panel.vcd-panel--open,.vcd-panel:not([hidden]){display:flex}' +
         '.vcd-panel[hidden]{display:none!important}' +
         '.vcd-panel__head{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#25262b;border-bottom:1px solid #343a40}' +
@@ -692,6 +696,9 @@
 
       document.head.appendChild(style)
       document.body.appendChild(root)
+      if (!uiVisible) {
+        root.setAttribute('hidden', '')
+      }
 
       panel = root.querySelector('.vcd-panel')
       logList = root.querySelector('[data-pane="log"]')
@@ -770,7 +777,26 @@
       }
       buildUi()
       hookConsole()
-      addLog('info', ['debug panel ready', versionLabel || ''])
+      addLog('debug', ['debug panel ready', versionLabel || ''])
+    }
+
+    /**
+     * Show/hide the floating debug UI. Logging still works when hidden.
+     * @param {boolean} enabled
+     */
+    function setVisible(enabled) {
+      uiVisible = !!enabled
+      if (!root) {
+        return
+      }
+      if (uiVisible) {
+        root.removeAttribute('hidden')
+      } else {
+        if (panelOpen) {
+          setPanelOpen(false)
+        }
+        root.setAttribute('hidden', '')
+      }
     }
 
     /**
@@ -803,6 +829,7 @@
 
     return {
       init,
+      setVisible,
       log: function () {
         addLog('log', Array.from(arguments))
       },
@@ -1629,6 +1656,9 @@
         break
       case 'VC_DEBUG_OPTIONS':
         applyDebugOptions(payload)
+        break
+      case 'VC_DEBUG_PANEL':
+        applyDebugPanelOptions(payload)
         break
       case 'VC_NETWORK_BODY_READ':
         readNetworkBody(payload)
@@ -3080,6 +3110,18 @@
     const data = payload && typeof payload === 'object' ? payload : {}
     if (typeof data.navProbe === 'boolean') {
       setNavProbe(data.navProbe)
+    }
+  }
+
+  /**
+   * Show/hide the viewer floating DebugPanel (green 「调」 button).
+   * Default: hidden when embedded in a parent iframe; visible as top window.
+   * @param {unknown} payload
+   */
+  function applyDebugPanelOptions(payload) {
+    const data = payload && typeof payload === 'object' ? payload : {}
+    if (typeof data.enabled === 'boolean') {
+      DebugPanel.setVisible(data.enabled)
     }
   }
 

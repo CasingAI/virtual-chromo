@@ -95,7 +95,7 @@ virtual-chromo 作为**被动 WebView**：子页面**不能**自主换页、不�
 
 **排查**：
 
-1. viewer 右下角「调」→ **导航** → 勾选 **导航探针**（或父发 `VC_DEBUG_OPTIONS { navProbe: true }`）
+1. 先发 `VC_DEBUG_PANEL { enabled: true }`（或 Chromo 扩展页勾选「Chromo 调试面板」）→ viewer 左下角「调」→ **导航** → 勾选 **导航探针**（或父发 `VC_DEBUG_OPTIONS { navProbe: true }`）
 2. 再导航到问题站点：父侧不再收到 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`，连环开 Tab 应停止
 3. 「导航」列表查看被拦截的意图与 `stack`，定位站点脚本触发点
 4. 父侧改为：同 URL / `method:'open'` 去重；仅用户明确「新标签打开」时才 `createTab`
@@ -150,7 +150,7 @@ document.__vcPassiveNavInstalled  // true（v19+ bundle 侧 capture 已装）
 | 组件 | 能看到什么 |
 |------|------------|
 | Chrome DevTools（content iframe） | 原生 console 输出 |
-| bridge 内置 Debug Panel（vcd） | **仅 viewer 外壳** 的 console，**不含**子页面 |
+| bridge 内置 Debug Panel（vcd） | **仅 viewer 外壳** 的 console，**不含**子页面。嵌入父 iframe 时默认隐藏；父发 `VC_DEBUG_PANEL { enabled: true }` 后显示左下角「调」 |
 | `VC_CONSOLE_UPDATED` + `VC_CONSOLE_READ` | 子页面经 inject hook 的上报（父项目/DevTools 面板需自己监听） |
 
 ---

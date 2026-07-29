@@ -255,6 +255,20 @@ iframe.contentWindow.postMessage(['VC_NETWORK_OPTIONS', {
 
 > Application 存储管理 API（build `20260728-v17`+）：见上文 `VC_COOKIE_*` / `VC_STORAGE_*` / `VC_IDB_*` / `VC_SITE_CACHE_*` / `VC_NETWORK_CACHE_*` / `VC_SW_INFO`。全局清除仍可用 `VC_CLEAR_STATE`。
 
+### `VC_DEBUG_PANEL`
+
+控制 viewer 外壳内置调试面板（绿色「调」浮钮）的显示（build `20260728-v20`+）。
+
+```javascript
+iframe.contentWindow.postMessage(['VC_DEBUG_PANEL', { enabled: true }], '*')
+```
+
+- `enabled: true`：显示浮钮；可展开日志 / 通讯 / 网络 / 导航 / 状态
+- `enabled: false`：隐藏浮钮与已展开面板
+- **默认**：嵌入父 iframe（Chromo）时关闭；独立打开 `viewer.html` 时开启（便于开发）
+- 隐藏时仍会采集 bridge 内部日志（`vlog` / `vmsg`），仅不渲染 UI
+- 与 `VC_DEBUG_OPTIONS`（导航探针）独立；Chromo「扩展」页勾选「Chromo 调试面板」后发送本命令
+
 ### `VC_DEBUG_OPTIONS`
 
 导航探针（build `20260728-v19`+）。开启后**抑制**向父窗口上报 `VC_CLICK` / `VC_LOCATION` / `VC_HISTORY`，改为采集调用栈并在 viewer 调试面板「导航」tab 展示；同时发出只读观测事件 `VC_DEBUG_NAV`。
