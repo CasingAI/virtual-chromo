@@ -1,5 +1,7 @@
 import {Signal} from './signal.js'
 
+/** Bump when adding/renaming object stores so existing `.sys` DBs upgrade. */
+const DB_SCHEMA_VERSION = 2
 
 export class Database {
   /**
@@ -23,15 +25,53 @@ export class Database {
   }
 
   /**
+   * @param {IDBDatabase} idb
+   * @param {Object<string, IDBObjectStoreParameters>} opts
+   */
+  _ensureStores(idb, opts) {
+    for (const [k, v] of Object.entries(opts)) {
+      if (!idb.objectStoreNames.contains(k)) {
+        idb.createObjectStore(k, v)
+      }
+    }
+  }
+
+  /**
    * @param {Object<string, IDBObjectStoreParameters>} opts 
    */
   open(opts) {
     const s = new Signal()
-    const req = indexedDB.open(this._name)
+    const req = indexedDB.open(this._name, DB_SCHEMA_VERSION)
 
     req.onsuccess = (e) => {
       const idb = req.result
       this._db = idb
+
+      // Legacy DBs opened without version may lack stores; force one more bump.
+      const missing = Object.keys(opts).filter(
+        (name) => !idb.objectStoreNames.contains(name),
+      )
+      if (missing.length > 0) {
+        const nextVersion = idb.version + 1
+        idb.close()
+        const upgradeReq = indexedDB.open(this._name, nextVersion)
+        upgradeReq.onupgradeneeded = () => {
+          this._ensureStores(upgradeReq.result, opts)
+        }
+        upgradeReq.onsuccess = () => {
+          this._db = upgradeReq.result
+          this._db.onclose = () => {
+            console.warn('[jsproxy] indexedDB disconnected, reopen...')
+            this.open(opts)
+          }
+          s.notify()
+        }
+        upgradeReq.onerror = () => {
+          console.warn('upgradeReq.onerror:', upgradeReq.error)
+          s.abort(upgradeReq.error)
+        }
+        return
+      }
 
       idb.onclose = (e) => {
         console.warn('[jsproxy] indexedDB disconnected, reopen...')
@@ -44,10 +84,7 @@ export class Database {
       s.abort(req.error)
     }
     req.onupgradeneeded = (e) => {
-      const idb = req.result
-      for (const [k, v] of Object.entries(opts)) {
-        idb.createObjectStore(k, v)
-      }
+      this._ensureStores(req.result, opts)
     }
     return s.wait()
   }
