@@ -19,7 +19,8 @@ virtual-chromo 作为 iframe 嵌入外层「浏览器壳」项目，双方通过
 
 - Viewer：`https://<worker>/viewer` 或 `/`
 - 新标签空白页：`https://<worker>/blank.html`（viewer 在无导航时自动加载；上报 `VC_NAVIGATED { url: '' }`，父级地址栏保持空）
-- 代理页：`https://<worker>/-----https://example.com/`
+- 代理页（viewer / SW）：`https://<worker>/-----https://example.com/`
+- **宿主 CORS relay**（父页跨源 `fetch`，不经 SW）：同一 `/-----{绝对 URL}` 路径，Worker 直接反向代理目标并加 CORS 头（非 jsproxy `/http/` 协议）
 - 旧书签 `/s/<id>/-----…` 仍可解码，但新导航不再生成 `/s/`
 
 ### `VC_CLEAR_STATE`

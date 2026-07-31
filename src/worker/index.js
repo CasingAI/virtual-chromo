@@ -50,13 +50,121 @@ export default {
   },
 }
 
+const PROXY_PATH_PREFIX = '/-----'
+
+/**
+ * Host-side CORS relay for Instant OS `proxiedFetch`.
+ * Path: `{origin}/-----{absoluteTargetUrl}`
+ * Viewer SW still intercepts same-origin `/-----` and routes via `/http/`;
+ * cross-origin host fetches hit this Worker path directly.
+ *
+ * @param {Request} req
+ * @param {string} pathname
+ */
+async function hostCorsRelay(req, pathname) {
+  const marker = pathname.indexOf(PROXY_PATH_PREFIX)
+  if (marker === -1) {
+    return makeRes('missing proxy prefix', 400)
+  }
+
+  if (
+    req.method === 'OPTIONS' &&
+    req.headers.has('access-control-request-headers')
+  ) {
+    return new Response(null, PREFLIGHT_INIT)
+  }
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, PREFLIGHT_INIT)
+  }
+
+  const rawTarget = pathname.slice(marker + PROXY_PATH_PREFIX.length)
+  if (!rawTarget) {
+    return makeRes('missing proxy target', 400)
+  }
+
+  const urlStr = rawTarget.replace(/^(https?):\/+/, '$1://')
+  const targetUrl = newUrl(urlStr)
+  if (!targetUrl) {
+    return makeRes('invalid proxy url: ' + urlStr, 403)
+  }
+  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+    return makeRes('only http/https targets are allowed', 403)
+  }
+
+  const hopByHop = new Set([
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailers',
+    'transfer-encoding',
+    'upgrade',
+    'host',
+    'origin',
+    'referer',
+  ])
+
+  const fwdHeaders = new Headers()
+  for (const [k, v] of req.headers.entries()) {
+    if (hopByHop.has(k.toLowerCase())) continue
+    if (k.toLowerCase().startsWith('sec-fetch-')) continue
+    fwdHeaders.set(k, v)
+  }
+
+  /** @type {RequestInit} */
+  const reqInit = {
+    method: req.method,
+    headers: fwdHeaders,
+    redirect: 'follow',
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.bodyUsed) {
+    reqInit.body = await req.arrayBuffer()
+  }
+
+  let upstream
+  try {
+    upstream = await fetch(targetUrl.href, reqInit)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return makeRes('proxy fetch failed: ' + message, 502)
+  }
+
+  const resHeaders = new Headers()
+  const passThrough = [
+    'content-type',
+    'content-length',
+    'content-encoding',
+    'cache-control',
+    'expires',
+    'last-modified',
+    'etag',
+  ]
+  for (const name of passThrough) {
+    const value = upstream.headers.get(name)
+    if (value != null) {
+      resHeaders.set(name, value)
+    }
+  }
+  resHeaders.set('access-control-allow-origin', '*')
+  resHeaders.set('access-control-expose-headers', '*')
+  resHeaders.set('--ver', String(JS_VER))
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: resHeaders,
+  })
+}
+
 /**
  * @param {Request} request
  * @param {{ ASSETS: Fetcher }} env
  */
 async function fetchHandler(request, env) {
   const urlObj = new URL(request.url)
-  const path = urlObj.pathname + urlObj.search
 
   if (
     urlObj.protocol === 'http:' &&
@@ -68,6 +176,11 @@ async function fetchHandler(request, env) {
       'strict-transport-security': 'max-age=99999999; includeSubDomains; preload',
       location: urlObj.href,
     })
+  }
+
+  // Host CORS relay (Instant OS proxiedFetch). Must run before ASSETS fallback.
+  if (urlObj.pathname.includes(PROXY_PATH_PREFIX)) {
+    return hostCorsRelay(request, urlObj.pathname + urlObj.search)
   }
 
   if (urlObj.pathname.startsWith('/http/')) {

@@ -87,7 +87,8 @@ npm run deploy
 
 部署后 iframe 入口：`https://<your-worker>.workers.dev/viewer`（或 `/`）
 
-- 代理页路径：`/-----https://example.com/`
+- 代理页路径（viewer / SW）：`/-----https://example.com/`
+- **宿主 CORS relay**（父页 `fetch`，不经 SW）：同一路径 `{origin}/-----{绝对目标 URL}`，直接反向代理并返回 `access-control-allow-origin: *`（供 Instant OS `proxiedFetch` / AI / GitHub 等）。首版不做 Origin 白名单与严格 SSRF 防护，后续可加固。
 - 旧书签 `/s/<id>/-----…` 仍可解码，但新导航不再生成 `/s/`
 
 ## 父项目接入
