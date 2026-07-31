@@ -1,16 +1,33 @@
 'use strict'
 
-const JS_VER = 10
+const JS_VER = 11
 const MAX_RETRY = 1
 
-/** @type {RequestInit} */
-const PREFLIGHT_INIT = {
-  status: 204,
-  headers: new Headers({
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
-    'access-control-max-age': '1728000',
-  }),
+const PREFLIGHT_ALLOW_METHODS =
+  'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS'
+
+/** 预检未声明具体头时的兜底；含 Authorization / X-Api-Key（AI、语音、GitHub） */
+const PREFLIGHT_ALLOW_HEADERS_FALLBACK =
+  'authorization,content-type,x-api-key,x-requested-with,accept,accept-language'
+
+/**
+ * CORS 预检：回显 Access-Control-Request-Headers，否则浏览器会拒绝 Authorization 等非简单头。
+ * @param {Request} req
+ */
+function preflightResponse(req) {
+  const requested = req.headers.get('access-control-request-headers')
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': PREFLIGHT_ALLOW_METHODS,
+      'access-control-allow-headers':
+        requested && requested.trim()
+          ? requested
+          : PREFLIGHT_ALLOW_HEADERS_FALLBACK,
+      'access-control-max-age': '1728000',
+    },
+  })
 }
 
 /**
@@ -67,15 +84,8 @@ async function hostCorsRelay(req, pathname) {
     return makeRes('missing proxy prefix', 400)
   }
 
-  if (
-    req.method === 'OPTIONS' &&
-    req.headers.has('access-control-request-headers')
-  ) {
-    return new Response(null, PREFLIGHT_INIT)
-  }
-
   if (req.method === 'OPTIONS') {
-    return new Response(null, PREFLIGHT_INIT)
+    return preflightResponse(req)
   }
 
   const rawTarget = pathname.slice(marker + PROXY_PATH_PREFIX.length)
@@ -258,11 +268,8 @@ async function httpHandler(req, pathname) {
     return Response.error()
   }
 
-  if (
-    req.method === 'OPTIONS' &&
-    reqHdrRaw.has('access-control-request-headers')
-  ) {
-    return new Response(null, PREFLIGHT_INIT)
+  if (req.method === 'OPTIONS') {
+    return preflightResponse(req)
   }
 
   let acehOld = false
